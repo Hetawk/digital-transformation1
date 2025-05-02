@@ -1,0 +1,37 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run Active Stata do file",
+            "type": "shell",
+            "command": "/Applications/Stata/StataSE.app/Contents/MacOS/StataSE",
+            "args": [
+                "-b",
+                "do",
+                "${file}"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Open Stata log",
+            "type": "shell",
+            "command": "code",
+            "args": [
+                "${workspaceFolder}/filtering001.log"
+            ],
+            "presentation": {
+                "reveal": "always"
+            },
+            "problemMatcher": []
+        }
+    ]
+}

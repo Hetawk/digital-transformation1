@@ -1,0 +1,13 @@
+{
+    "code-runner.executorMap": {
+        "stata": "/Applications/Stata/StataSE.app/Contents/MacOS/StataSE -b do"
+    },
+    "code-runner.executorMapByFileExtension": {
+        ".do": "/Applications/Stata/StataSE.app/Contents/MacOS/StataSE -b do"
+    },
+    "code-runner.fileDirectoryAsCwd": true,
+    "code-runner.runInTerminal": true,
+    "files.associations": {
+        "*.do": "stata"
+    }
+}
