@@ -18,7 +18,7 @@ file write summary "MAIN FINDINGS:" _n
 file write summary "-------------" _n
 
 // Hypothesis testing results
-capture confirm global h1_coef
+capture confirm scalar $h1_coef
 if _rc == 0 {
     file write summary "1. Effect of Capital Market Liberalization (MSCI Inclusion) on Digital Transformation: " _n
     file write summary "   - Standard Pooled OLS DiD (Treat*Post coefficient from H1): " %9.4f ($h1_coef) " (p=" %9.4f ($h1_p) ")" _n
@@ -27,10 +27,34 @@ if _rc == 0 {
     
     // Retrieve alternative model results if available
     GetAltModelResults
-    file write summary "     - Model 1 (Direct FE): Coef(MSCI_clean) = " %9.4f (${alt1_coef}) ", p = " %9.4f (${alt1_p}) _n
-    file write summary "     - Model 2 (Post-Period FE): Coef(MSCI_clean) = " %9.4f (${alt2_coef}) ", p = " %9.4f (${alt2_p}) _n
-    file write summary "     - Model 3 (Matched Sample): ATE = " %9.4f (${m3_effect}) ", p = " %9.4f (${m3_p}) _n
-    file write summary "     - Model 4 (First Differences): Coef(MSCI_clean) = " %9.4f (${alt4_coef}) ", p = " %9.4f (${alt4_p}) _n _n
+    
+    // Check if alternative model results exist before writing them
+    capture confirm scalar $alt1_coef
+    if _rc == 0 {
+        file write summary "     - Model 1 (Direct FE): Coef(MSCI_clean) = " %9.4f (${alt1_coef}) ", p = " %9.4f (${alt1_p}) _n
+    }
+    
+    capture confirm scalar $alt2_coef
+    if _rc == 0 {
+        file write summary "     - Model 2 (Post-Period FE): Coef(MSCI_clean) = " %9.4f (${alt2_coef}) ", p = " %9.4f (${alt2_p}) _n
+    }
+    
+    capture confirm scalar $m3_effect
+    if _rc == 0 {
+        file write summary "     - Model 3 (Matched Sample): ATE = " %9.4f (${m3_effect}) ", p = " %9.4f (${m3_p}) _n
+    }
+    
+    capture confirm scalar $alt4_coef
+    if _rc == 0 {
+        file write summary "     - Model 4 (First Differences): Coef(MSCI_clean) = " %9.4f (${alt4_coef}) ", p = " %9.4f (${alt4_p}) _n
+    }
+    
+    file write summary _n
+}
+else {
+    file write summary "1. Effect of Capital Market Liberalization (MSCI Inclusion) on Digital Transformation: " _n
+    file write summary "   - Standard Pooled OLS DiD analysis produced unreliable results due to data limitations." _n
+    file write summary "   - See alternative models in the tables directory for more robust estimates." _n _n
 }
 
 // Mechanism findings

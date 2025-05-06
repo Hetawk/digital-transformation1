@@ -29,7 +29,7 @@ def parse_arguments():
     preprocess_parser.add_argument('--output', type=str, default='dataset/preprocessed_data.pkl',
                         help='Path to save preprocessed data')
     preprocess_parser.add_argument('--format', type=str, choices=['dta', 'csv'], default='dta',
-                        help='Input file format (dta for Stata, csv for CSV)')
+                        hehlp='Input file format (dta for Stata, csv for CSV)')
     
     # Analyze mode
     analyze_parser = subparsers.add_parser('analyze', help='Run analysis on preprocessed data')

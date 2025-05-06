@@ -12,12 +12,12 @@ capture log close
 capture log close _all
 
 // Define project directory structure (adjust as needed)
-global project_dir "/data2/enoch/ekd_coding_env/patience/digital_transformation"
+global project_dir "/Users/hetawk/Desktop/Desktop/Desktop/Others/Patience/Thesis/data/data-code/patie_preprocess"
 global do_dir     "${project_dir}/do"
 global data_in    "${project_dir}/dataset"
 global data_out   "${project_dir}/dataset"
 global results    "${project_dir}/results"
-global logs       "${project_dir}/logs"
+global logs       "${project_dir}/results/logs"
 
 // Create necessary directories
 foreach dir in "${results}" "${results}/tables" "${results}/figures" "${logs}" {
