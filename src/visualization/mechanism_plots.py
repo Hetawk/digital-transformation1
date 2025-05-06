@@ -60,7 +60,7 @@ class MechanismPlots:
         --------
         matplotlib.figure.Figure: The figure object
         """
-        # FIX: Check if dataframe is empty or missing required columns
+        # Check if dataframe is empty or missing required columns
         if mechanism_df is None or mechanism_df.empty:
             print("Warning: Empty mechanism dataframe, cannot create plot")
             fig, ax = plt.subplots(figsize=(11, 7))
