@@ -3,6 +3,7 @@ Configuration settings for the MSCI inclusion and digital transformation analysi
 """
 
 import os
+import logging
 from pathlib import Path
 
 # Project directory paths
@@ -22,6 +23,28 @@ DATA_FILE = DATA_DIR / "msci_dt_processed_2010_2023.csv"
 # Analysis parameters
 TREATMENT_YEAR = 2018  # Year of MSCI inclusion (post-2018)
 PLACEBO_YEAR = 2015    # Year for placebo tests
+
+# Set up logger
+logger = logging.getLogger('digital_transformation')
+
+def configure_logging(log_level=logging.INFO):
+    """
+    Configure the logger for the project
+    
+    Parameters:
+    -----------
+    log_level : int
+        Logging level (default: logging.INFO)
+    """
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', 
+                                     datefmt='%Y-%m-%d %H:%M:%S')
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+        logger.setLevel(log_level)
+        
+    return logger
 
 # Variable groups
 DT_MEASURES = [
@@ -63,6 +86,5 @@ COLORS = {
     'control': '#ff7f0e',  # orange
     'highlight': '#2ca02c'  # green
 }
-
 # Model specifications
 RANDOM_SEED = 42

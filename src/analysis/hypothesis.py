@@ -10,8 +10,8 @@ import sys
 import logging
 import traceback
 
-from src.utils import create_formula, format_regression_table, save_results_to_file
-import config
+from utils.util import create_formula, format_regression_table, save_results_to_file
+import loader.config as config
 
 # Set up logger
 logger = logging.getLogger('digital_transformation')
@@ -236,18 +236,44 @@ class HypothesisTesting:
         if placebo_year is None:
             placebo_year = int(config.TREATMENT_YEAR) - 3
 
+        # Store original data
+        original_data = self.data.copy()
+
         # Create placebo Post variable
         self.data['Placebo_Post'] = (self.data['year'] >= placebo_year).astype(int)
         
+        # Create placebo Treat variable - define as 0 for all observations
+        # to ensure a proper placebo test
+        self.data['Placebo_Treat'] = 0
+        
+        # If we have non-zero Treat values, randomly assign some control units to be "placebo treated"
+        # but ONLY among those that are never actually treated in the real study
+        if 1 in self.data['Treat'].unique():
+            # Identify control units (never treated in the actual study)
+            control_firms = self.data[self.data['Treat'] == 0]['stkcd'].unique()
+            
+            # If we have enough control firms, randomly select ~20% of them to be "placebo treated"
+            if len(control_firms) >= 10:
+                import random
+                random.seed(42)  # For reproducibility
+                placebo_treated = random.sample(list(control_firms), k=max(1, int(len(control_firms) * 0.2)))
+                
+                # Assign Placebo_Treat = 1 to these randomly selected control firms
+                self.data.loc[self.data['stkcd'].isin(placebo_treated), 'Placebo_Treat'] = 1
+                
+                logger.info(f"Assigned {len(placebo_treated)} control firms to placebo treatment group")
+            else:
+                logger.warning("Not enough control firms to create meaningful placebo treatment group")
+        
         # Create placebo interaction
-        self.data['Placebo_TreatPost'] = self.data['Treat'] * self.data['Placebo_Post']
+        self.data['Placebo_TreatPost'] = self.data['Placebo_Treat'] * self.data['Placebo_Post']
 
         # Dependent variable
         y_var = "Digital_transformationA"
 
         # Main independent variables (including placebo)
-        x_vars = ["Treat", "Placebo_Post", "Placebo_TreatPost"]
-
+        x_vars = ["Placebo_Treat", "Placebo_Post", "Placebo_TreatPost"]
+        
         # Control variables
         control_vars = []
         if controls:
@@ -309,12 +335,17 @@ class HypothesisTesting:
                 model, title=f"Placebo Test: Assuming Treatment in {placebo_year}")
             print(result_str)
             
+            # Restore original data
+            self.data = original_data
+            
             return model
             
         except Exception as e:
             logger.error(f"Error in placebo test: {str(e)}")
             logger.error(f"Data shape: {df_sub.shape}, formula: {formula}")
             logger.error(f"Traceback: {traceback.format_exc()}")
+            # Restore original data
+            self.data = original_data
             sys.exit(1)
 
     def compare_hypotheses(self):

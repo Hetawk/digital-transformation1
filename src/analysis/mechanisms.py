@@ -2,8 +2,9 @@
 Mechanism analysis for MSCI inclusion and digital transformation research
 """
 
-from src.utils import create_formula, format_regression_table, save_results_to_file
-import config
+import traceback
+from utils.util import create_formula, format_regression_table, save_results_to_file
+import loader.config as config
 import pandas as pd
 import numpy as np
 import statsmodels.formula.api as smf
@@ -11,6 +12,7 @@ import statsmodels.api as sm
 import os
 from pathlib import Path
 import sys
+from loader.config import logger
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
@@ -51,30 +53,97 @@ class MechanismAnalysis:
         --------
         statsmodels.regression.linear_model.RegressionResults: Model results
         """
-        # Filter to post-treatment if specified
-        if post_only:
-            data = self.data[self.data['Post'] == 1].copy()
-        else:
-            data = self.data.copy()
-        
-        # Build formula - include interaction between treatment and mechanism
-        formula = f"{dv} ~ Treatment + {mechanism_var} + Treatment:{mechanism_var}"
-        
-        # Add controls
-        if controls and hasattr(self, 'control_vars') and self.control_vars:
-            formula += " + " + " + ".join(self.control_vars)
-        
-        # Add fixed effects
-        if year_fe:
-            formula += " + C(year)"
-        
-        if entity_fe and 'panel_id' in data.columns:
-            formula += " + C(panel_id)"
-        
-        # Run model
-        model = smf.ols(formula=formula, data=data).fit(cov_type='cluster', 
-                                                        cov_kwds={'groups': data['panel_id']})
-        return model
+        try:
+            # Filter to post-treatment if specified
+            if post_only:
+                data = self.data[self.data['Post'] == 1].copy()
+            else:
+                data = self.data.copy()
+            
+            # Check if variables exist
+            if dv not in data.columns:
+                logger.error(f"Dependent variable {dv} not found in dataset")
+                return None
+                
+            if mechanism_var not in data.columns:
+                logger.error(f"Mechanism variable {mechanism_var} not found in dataset")
+                return None
+                
+            if 'MSCI_clean' not in data.columns:
+                logger.error("MSCI_clean variable not found in dataset")
+                return None
+            
+            # Create interaction term
+            interaction_name = f"MSCI_clean_{mechanism_var}"
+            data[interaction_name] = data['MSCI_clean'] * data[mechanism_var]
+            
+            # Build formula
+            formula = f"{dv} ~ MSCI_clean + {mechanism_var} + {interaction_name}"
+            
+            # Define control variables if not yet defined
+            if controls and not hasattr(self, 'control_vars'):
+                self.control_vars = ['age', 'TFP_OP', 'SA_index', 'WW_index', 'F050501B', 'F060101B']
+            
+            # Add controls (excluding the mechanism variable if it's a control)
+            if controls and hasattr(self, 'control_vars'):
+                other_controls = [var for var in self.control_vars 
+                                if var in data.columns and var != mechanism_var]
+                if other_controls:
+                    formula += " + " + " + ".join(other_controls)
+            
+            # Add fixed effects
+            if year_fe:
+                formula += " + C(year)"
+            
+            if entity_fe:
+                # Use panel_id if available, otherwise stkcd
+                if 'panel_id' in data.columns:
+                    formula += " + C(panel_id)"
+                    cluster_var = data['panel_id'].astype(str)
+                elif 'stkcd' in data.columns:
+                    formula += " + C(stkcd)"
+                    cluster_var = data['stkcd'].astype(str)
+                else:
+                    cluster_var = pd.Series(['1'] * len(data))
+            else:
+                # Default clustering
+                if 'stkcd' in data.columns:
+                    cluster_var = data['stkcd'].astype(str)
+                elif 'panel_id' in data.columns:
+                    cluster_var = data['panel_id'].astype(str)
+                else:
+                    cluster_var = pd.Series(['1'] * len(data))
+            
+            # Prepare data by dropping NA values
+            vars_in_formula = [v for v in formula.split() if v in data.columns]
+            vars_in_formula.extend([dv, 'MSCI_clean', mechanism_var, interaction_name])
+            if 'stkcd' in data.columns:
+                vars_in_formula.append('stkcd')
+            if 'panel_id' in data.columns:
+                vars_in_formula.append('panel_id')
+            
+            # Create a clean subset
+            analysis_data = data.dropna(subset=vars_in_formula)
+            
+            if len(analysis_data) == 0:
+                logger.error(f"No valid observations after dropping NA values for mechanism {mechanism_var}")
+                return None
+                
+            # Log analysis details
+            logger.info(f"Running mechanism analysis for {mechanism_var} on {len(analysis_data)} observations")
+            logger.info(f"Formula: {formula}")
+            
+            # Run the model
+            model = smf.ols(formula, data=analysis_data).fit(
+                cov_type='cluster',
+                cov_kwds={'groups': cluster_var}
+            )
+            
+            return model
+        except Exception as e:
+            logger.error(f"Error estimating model for {mechanism_var}: {str(e)}")
+            logger.error(f"Details: {traceback.format_exc()}")
+            return None
 
     def analyze_financial_access(self, dv="Digital_transformationA", post_only=True):
         """

@@ -2,7 +2,7 @@
 Data preprocessing module for MSCI inclusion and digital transformation analysis
 """
 
-import config
+import loader.config as config
 import pandas as pd
 import numpy as np
 import os
@@ -24,10 +24,23 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
 
 class DataPreprocessor:
-    def __init__(self, data_file=None):
-        """Initialize the DataPreprocessor"""
+    def __init__(self, data_file=None, file_format='csv'):
+        """Initialize the DataPreprocessor
+        
+        Parameters:
+        -----------
+        data_file : str or Path, optional
+            Path to data file
+        file_format : str, default 'csv'
+            Format of the data file ('dta' for Stata, 'csv' for CSV)
+        """
         self.data_file = data_file or config.DATA_FILE
+        self.file_format = file_format
         self.data = None
+        
+        # If data_file is specified and exists but has no extension, add it
+        if self.data_file and not Path(self.data_file).suffix:
+            self.data_file = f"{self.data_file}.{self.file_format}"
 
     def _load_data(self, data_file=None):
         """
@@ -53,11 +66,11 @@ class DataPreprocessor:
         
         logger.info(f"Found data file: {data_path}")
         
-        # Auto-detect file type based on extension
-        file_ext = data_path.suffix.lower()
+        # Auto-detect file type based on extension or use specified format
+        file_ext = data_path.suffix.lower()[1:] if data_path.suffix else self.file_format
         
         # Try Stata file if it has .dta extension
-        if file_ext == '.dta':
+        if file_ext == 'dta':
             try:
                 logger.info("Detected Stata file format, attempting to load...")
                 # Try using pyreadstat if available (better for complex Stata files)

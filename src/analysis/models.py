@@ -2,8 +2,8 @@
 Model estimation and analysis for MSCI inclusion and digital transformation research
 """
 
-from src.utils import create_formula, format_regression_table, save_results_to_file, match_nearest_neighbor, prepare_event_study_data
-import config
+from utils.util import create_formula, format_regression_table, save_results_to_file, match_nearest_neighbor, prepare_event_study_data
+import loader.config as config
 import pandas as pd
 import numpy as np
 import statsmodels.formula.api as smf

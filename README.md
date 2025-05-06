@@ -42,6 +42,49 @@ Run the full analysis:
 
 ```
 python main.py
+
+# Preprocess only:
+python main.py preprocess --data dataset/msci_dt_processed_2010_2023.dta
+
+# Run analysis on preprocessed data:
+python main.py analyze --steps descriptive hypothesis
+
+
+# Run full analysis (preprocessing + analysis):
+python main.py full --data dataset/msci_dt_processed_2010_2023.dta
+
+# Navigate to project directory
+cd /data2/enoch/ekd_coding_env/patience/digital_transformation
+
+# Run the diagnostics script
+python run_diagnostics.py
+
+# If there's a specific command for diagnostics
+python main.py diagnostics
+
+# If diagnostics is run as part of analysis
+python main.py analyze --steps diagnostics
+
+# If diagnostics is part of the full pipeline
+python main.py full --include-diagnostics
+
+
+# Basic Usage:
+python run_diagnostics.py
+
+# With Sample (to avoid loading the entire malformed file):
+python run_diagnostics.py --sample
+
+
+# With Different Parsing Options:
+python run_diagnostics.py --delimiter="|" --encoding="latin1"
+
+# With Row Limit:
+python run_diagnostics.py --nrows=10000
+
+# Specifying a Different Data File:
+python run_diagnostics.py --data-file=/path/to/alternative/data.csv
+
 ```
 
 The script will:

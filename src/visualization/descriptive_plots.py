@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 import numpy as np
-import config
+import loader.config as config
 import logging
 import sys
 import traceback
@@ -278,8 +278,8 @@ class DescriptivePlots:
         # Create figure
         fig, ax = plt.subplots(figsize=(10, 6))
         
-        # Extract data as numpy array to avoid pandas indexing issues
-        data_values = self.data[variable].dropna().values  # Use .values instead of to_numpy()
+        # Convert to numpy array before manipulation to avoid pandas indexing issues
+        data_values = self.data[variable].dropna().to_numpy()  # Use to_numpy() instead of values
         
         if len(data_values) == 0:
             logger.warning(f"No non-NA values for {variable}")

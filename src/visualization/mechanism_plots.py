@@ -2,7 +2,7 @@
 Mechanism visualization module for MSCI inclusion and digital transformation analysis
 """
 
-import config
+import loader.config as config
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
