@@ -247,94 +247,142 @@ class ModelAnalysis:
             logger.error(f"Details: {traceback.format_exc()}")
             return None
 
-    def run_post_period_analysis(self, dv="Digital_transformationA", controls=True, year_fe=True, entity_fe=True):
+    def run_post_period_analysis(self, dv="Digital_transformationA", controls=True, year_fe=True):
         """
-        Run analysis on post-period only
-
+        Run post-period analysis (only post-treatment period)
+        
         Parameters:
         -----------
-        dv : str
-            Dependent variable name
-        controls : bool
+        dv : str, default 'Digital_transformationA'
+            Dependent variable
+        controls : bool, default True
             Whether to include control variables
-        year_fe : bool
+        year_fe : bool, default True
             Whether to include year fixed effects
-        entity_fe : bool
-            Whether to include entity fixed effects
-
+            
         Returns:
         --------
-        statsmodels regression result
+        statsmodels.regression.linear_model.RegressionResults
         """
-        # Filter to post period
+        # Subset to post-treatment period
+        if 'Post' not in self.data.columns:
+            raise ValueError("Post variable not found in dataset")
+            
+        # FIX: Create a copy first to avoid SettingWithCopyWarning
         post_data = self.data[self.data['Post'] == 1].copy()
-        if len(post_data) == 0:
-            raise ValueError("No observations in post-period")
-        formula = self._build_formula(dv, controls, year_fe, entity_fe)
-        model = smf.ols(formula, data=post_data).fit(cov_type='cluster',
-                                                     cov_kwds={'groups': post_data['stkcd']})
+        
+        # Build model formula
+        x_vars = ['MSCI']
+        
+        # Add control variables
+        if controls and hasattr(self, 'control_vars'):
+            for var in self.control_vars:
+                if var in post_data.columns:
+                    x_vars.append(var)
+        
+        # Add fixed effects
+        fe_vars = []
+        if year_fe:
+            fe_vars.append('year')
+        
+        # Build formula
+        from src.utils.util import create_formula
+        formula, subset = create_formula(dv, x_vars, fe_vars)
+        
+        # Drop missing values in variables used in the formula
+        all_vars = [dv] + x_vars + fe_vars
+        # FIX: Check if clustering variable exists before adding it
+        if 'stkcd' in post_data.columns: 
+            all_vars.append('stkcd')
+        
+        # Remove duplicates
+        all_vars = list(set(all_vars))
+        
+        # Drop rows with missing values
+        analysis_data = post_data.dropna(subset=all_vars)
+        
+        if len(analysis_data) == 0:
+            raise ValueError("No complete observations for post-period analysis")
+        
+        # Fit model
+        print(f"Fitting post-period model with formula: {formula}")
+        print(f"N={len(analysis_data)} observations")
+        
+        # FIX: Only use cluster robust SE if stkcd exists
+        if 'stkcd' in analysis_data.columns:
+            model = smf.ols(formula, data=analysis_data).fit(
+                cov_type='cluster', 
+                cov_kwds={'groups': analysis_data['stkcd'].astype(str)}
+            )
+        else:
+            model = smf.ols(formula, data=analysis_data).fit()
+        
+        # Store model
         model_name = f"post_period_{dv}"
         if controls:
             model_name += "_controls"
         if year_fe:
             model_name += "_yearfe"
-        if entity_fe:
-            model_name += "_entityfe"
+        
         self.models[model_name] = model
+        
         return model
 
-    def run_matched_sample_analysis(self, dv="Digital_transformationA", matching_vars=None):
+    def run_matched_sample_analysis(self, matching_vars=None, outcome_var="Digital_transformationA"):
         """
         Run matched sample analysis
-
+        
         Parameters:
         -----------
-        dv : str
-            Dependent variable name
         matching_vars : list or None
-            Variables to use for matching, default to age and productivity
-
+            Variables to match on, defaults to ['age', 'TFP_OP']
+        outcome_var : str, default 'Digital_transformationA'
+            Outcome variable
+            
         Returns:
         --------
-        tuple : (matched_data, ate, ate_se)
-            matched_data: DataFrame of matched data
-            ate: Average treatment effect
-            ate_se: Standard error of ATE
+        tuple: (matched_data, ate, ate_se)
         """
         if matching_vars is None:
-            # Use age and productivity for matching
-            matching_vars = ["age", "TFP_OP"]
-        # Filter to variables that exist in the dataset
-        matching_vars = [
-            var for var in matching_vars if var in self.data.columns]
-        if not matching_vars:
-            raise ValueError("No valid matching variables found")
-        # Filter to post period
-        post_data = self.data[self.data['Post'] == 1].copy()
-
-        # Perform matching
+            matching_vars = ['age', 'TFP_OP']
+                    
+        # Verify variables exist
+        missing_vars = [var for var in matching_vars + [outcome_var, 'Treat'] 
+                       if var not in self.data.columns]
+        if missing_vars:
+            raise ValueError(f"Missing variables for matching: {missing_vars}")
+        
+        # Create a clean subset for matching - Drop NaN values in relevant columns
+        match_cols = matching_vars + [outcome_var, 'Treat']
+        match_data = self.data[match_cols].copy()
+        match_data = match_data.dropna(subset=match_cols)
+        
+        if len(match_data) == 0:
+            raise ValueError("No complete cases available for matching")
+        
+        from src.utils.util import match_nearest_neighbor
         matched_data, ate, ate_se = match_nearest_neighbor(
-            post_data,
-            treatment_var="MSCI_clean",
-            outcome_var=dv,
+            match_data, 
+            treatment_var='Treat',
+            outcome_var=outcome_var,
             matching_vars=matching_vars
         )
-        # Store results
+        
+        # Store matched data results for later use
         self.matched_data = matched_data
         self.matched_ate = ate
         self.matched_ate_se = ate_se
-        # Print results
-        print(f"Matched Sample Analysis Results:")
-        print(f"Average Treatment Effect (ATE): {ate:.4f}")
-        print(f"Standard Error: {ate_se:.4f}")
-        print(f"t-statistic: {ate/ate_se:.4f}")
-        print(f"Number of matched pairs: {len(matched_data)}")
+        
+        print(f"Matched sample analysis results:")
+        print(f"  Treatment effect: {ate:.4f}")
+        print(f"  Standard error: {ate_se:.4f}")
+        
         return matched_data, ate, ate_se
 
     def run_first_differences(self, dv="Digital_transformationA", controls=True, year_fe=True, entity_fe=True):
         """
-        Run first-differences model on post-period changes
-
+        Run first differences model
+        
         Parameters:
         -----------
         dv : str
@@ -345,7 +393,7 @@ class ModelAnalysis:
             Whether to include year fixed effects
         entity_fe : bool
             Whether to include entity fixed effects
-
+            
         Returns:
         --------
         statsmodels regression result
@@ -354,11 +402,20 @@ class ModelAnalysis:
         diff_var = f"D_{dv}"
         if diff_var not in self.data.columns:
             self.data[diff_var] = self.data.groupby('stkcd')[dv].diff()
-        # Filter to post period
+            
+        # Filter to post-treatment period
         post_data = self.data[self.data['Post'] == 1].copy()
+        
+        # Build the model formula
         formula = self._build_formula(diff_var, controls, year_fe, entity_fe)
-        model = smf.ols(formula, data=post_data).fit(cov_type='cluster',
-                                                     cov_kwds={'groups': post_data['stkcd']})
+        
+        # Run the model
+        model = smf.ols(formula, data=post_data).fit(
+            cov_type='cluster',
+            cov_kwds={'groups': post_data['stkcd'].astype(str)}
+        )
+        
+        # Store the model
         model_name = f"first_diff_{dv}"
         if controls:
             model_name += "_controls"
@@ -366,13 +423,14 @@ class ModelAnalysis:
             model_name += "_yearfe"
         if entity_fe:
             model_name += "_entityfe"
+            
         self.models[model_name] = model
         return model
 
     def run_event_study(self, dv="Digital_transformationA", window=(-5, 5), controls=True, entity_fe=True):
         """
         Run event study analysis
-
+        
         Parameters:
         -----------
         dv : str
@@ -383,39 +441,49 @@ class ModelAnalysis:
             Whether to include control variables
         entity_fe : bool
             Whether to include entity fixed effects
-
+            
         Returns:
         --------
         statsmodels regression result
         """
+        # Prepare event study data
         event_data = prepare_event_study_data(
             self.data,
             event_time_var="Event_time",
             outcome_var=dv,
             window=window
         )
+        
+        # Build and run the model
         formula = self._build_formula(dv, controls, False, entity_fe)
-        model = smf.ols(formula, data=event_data).fit(cov_type='cluster',
-                                                      cov_kwds={'groups': event_data['stkcd']})
+        model = smf.ols(formula, data=event_data).fit(
+            cov_type='cluster',
+            cov_kwds={'groups': event_data['stkcd'].astype(str)}
+        )
+        
+        # Store the model
         model_name = f"event_study_{dv}"
         if controls:
             model_name += "_controls"
         if entity_fe:
             model_name += "_entityfe"
+            
         self.models[model_name] = model
         return model
 
     def compare_models(self):
         """
         Compare results from different models
-
+        
         Returns:
         --------
         pd.DataFrame : Comparison of coefficients and p-values
         """
         if not self.models:
             raise ValueError("No models have been estimated")
+            
         results = []
+        
         # Extract coefficient of interest from each model
         for name, model in self.models.items():
             # Determine which coefficient to extract based on model type
@@ -431,12 +499,13 @@ class ModelAnalysis:
                     x.split('_')[1])) if time_coefs else None
             else:
                 coef_name = None
+                
             # Extract coefficient and statistics
             if coef_name and coef_name in model.params:
                 coef = model.params[coef_name]
                 pval = model.pvalues[coef_name]
                 stderr = model.bse[coef_name]
-
+                
                 results.append({
                     'Model': name,
                     'Coefficient': coef_name,
@@ -445,6 +514,7 @@ class ModelAnalysis:
                     'p-value': pval,
                     'Significant': pval < 0.05
                 })
+                
         # Add matched sample results if available
         if hasattr(self, 'matched_ate') and hasattr(self, 'matched_ate_se'):
             results.append({
@@ -455,12 +525,13 @@ class ModelAnalysis:
                 'p-value': 2 * (1 - abs(self.matched_ate / self.matched_ate_se)),
                 'Significant': 2 * (1 - abs(self.matched_ate / self.matched_ate_se)) < 0.05
             })
+            
         return pd.DataFrame(results)
 
     def export_results(self):
         """
         Export model results to files
-
+        
         Returns:
         --------
         None
@@ -468,20 +539,21 @@ class ModelAnalysis:
         # Create directory if it doesn't exist
         output_dir = config.TABLES_DIR
         output_dir.mkdir(parents=True, exist_ok=True)
-
+        
         # Export comparison table
         comparison = self.compare_models()
         comparison.to_csv(output_dir / "model_comparison.csv", index=False)
-
+        
         # Export detailed results for each model
         for name, model in self.models.items():
             table = format_regression_table(model, title=f"Model: {name}")
             save_results_to_file(table, f"model_{name}", 'txt')
-
+            
         # Export matched sample results if available
         if self.matched_data is not None:
             self.matched_data.to_csv(
                 output_dir / "matched_sample_data.csv", index=False)
+                
             # Create summary report
             report_content = "===============================================================\n"
             report_content += "             MATCHED SAMPLE ANALYSIS SUMMARY                  \n"
@@ -493,4 +565,54 @@ class ModelAnalysis:
             report_content += f"Number of matched pairs: {len(self.matched_data)}\n"
             save_results_to_file(
                 report_content, "matched_sample_summary", 'txt')
+                
         print(f"Model analysis results saved to {output_dir}")
+
+    def validate_data_for_models(self):
+        """
+        Validate data for model estimation
+        
+        Returns:
+        --------
+        dict: Validation results
+        """
+        validation = {
+            "is_valid": True,
+            "warnings": [],
+            "critical_issues": []
+        }
+        
+        # Check if we have the basic required variables
+        required_vars = ['Treat', 'Post', 'year', 'stkcd']
+        missing_vars = [var for var in required_vars if var not in self.data.columns]
+        
+        if missing_vars:
+            validation["is_valid"] = False
+            validation["critical_issues"].append(f"Missing critical variables: {missing_vars}")
+            
+        # Check if we have outcome variables
+        outcome_vars = [var for var in self.data.columns if var.startswith('Digital_transformation')]
+        if not outcome_vars:
+            validation["is_valid"] = False
+            validation["critical_issues"].append("No Digital_transformation variables found")
+        
+        # Check if we have treatment variation
+        if 'Treat' in self.data.columns:
+            treat_values = self.data['Treat'].unique()
+            if len(treat_values) < 2:
+                validation["warnings"].append(f"Only found treatment values: {treat_values}, expected both 0 and 1")
+        
+        # Check for staggered adoption design (no treated units pre-treatment)
+        if 'Treat' in self.data.columns and 'Post' in self.data.columns:
+            pre_treat = self.data[(self.data['Post'] == 0) & (self.data['Treat'] == 1)]
+            if len(pre_treat) == 0:
+                validation["warnings"].append("Staggered adoption design detected (no treated units pre-treatment)")
+        
+        # Check for high missing values
+        for var in required_vars + ['Digital_transformationA', 'Digital_transformationB']:
+            if var in self.data.columns:
+                pct_missing = self.data[var].isna().mean() * 100
+                if pct_missing > 0:
+                    validation["warnings"].append(f"Missing values in {var}: {pct_missing:.1f}%")
+        
+        return validation

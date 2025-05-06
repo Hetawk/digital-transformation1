@@ -13,7 +13,7 @@ import pickle
 import time
 
 # Import centralized logging configuration first
-from log_setup import logger, setup_logging
+from src.log_setup import logger, setup_logging
 
 # Import project modules
 import src.loader.config as config
@@ -64,6 +64,11 @@ def preprocess_data(data_file=None, file_format='dta', output_file=None):
     try:
         preprocessor = DataPreprocessor(data_file, file_format=file_format)
         data = preprocessor.run_all()
+        
+        if data is None or data.empty:
+            print("Warning: Preprocessing resulted in empty dataset.")
+            return None
+            
         processing_time = time.time() - start_time
         print(f"Data preprocessing complete. Shape: {data.shape}")
         print(f"Processing time: {processing_time:.2f} seconds")
@@ -73,10 +78,14 @@ def preprocess_data(data_file=None, file_format='dta', output_file=None):
             output_path = Path(output_file)
             output_path.parent.mkdir(parents=True, exist_ok=True)
             
-            # Save as pickle for faster loading in future runs
-            with open(output_path, 'wb') as f:
-                pickle.dump(data, f)
-            print(f"Preprocessed data saved to {output_path}")
+            try:
+                # Save as pickle for faster loading in future runs
+                with open(output_path, 'wb') as f:
+                    pickle.dump(data, f)
+                print(f"Preprocessed data saved to {output_path}")
+            except Exception as e:
+                print(f"Error saving preprocessed data: {e}")
+                # Still return the data even if saving failed
         
         return data
     except Exception as e:
@@ -87,7 +96,8 @@ def preprocess_data(data_file=None, file_format='dta', output_file=None):
             print(f"Data file specified: {data_file}")
         else:
             print(f"Using default data file: {config.DATA_FILE}")
-        sys.exit(1)
+        print("Returning None. Please fix the issues and try again.")
+        return None
 
 
 def load_preprocessed_data(preprocessed_file):

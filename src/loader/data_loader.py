@@ -12,7 +12,7 @@ import chardet
 
 # Import logger
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from log_setup import logger
+from src.log_setup import logger
 
 def load_dataset(file_path, delimiter=None, encoding=None, nrows=None, sample=False):
     """
@@ -235,7 +235,8 @@ def validate_dataframe(df):
     result = {
         "is_valid": True,
         "issues": [],
-        "warnings": []
+        "warnings": [],
+        "expected_columns_found": []  # Add this key to the result dictionary
     }
     
     # Check if dataframe is empty
@@ -252,6 +253,9 @@ def validate_dataframe(df):
     # Check expected columns
     expected_cols = ['Digital_transformationA', 'Digital_transformationB', 'Treat', 'Post', 'MSCI']
     missing_cols = [col for col in expected_cols if col not in df.columns]
+    
+    # Store found expected columns
+    result["expected_columns_found"] = [col for col in expected_cols if col in df.columns]
     
     if missing_cols:
         if len(missing_cols) == len(expected_cols):

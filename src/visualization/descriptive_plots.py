@@ -279,7 +279,8 @@ class DescriptivePlots:
         fig, ax = plt.subplots(figsize=(10, 6))
         
         # Convert to numpy array before manipulation to avoid pandas indexing issues
-        data_values = self.data[variable].dropna().to_numpy()  # Use to_numpy() instead of values
+        # FIX: Explicitly convert to NumPy array and ensure it's 1D
+        data_values = self.data[variable].dropna().to_numpy().flatten()
         
         if len(data_values) == 0:
             logger.warning(f"No non-NA values for {variable}")

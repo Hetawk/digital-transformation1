@@ -2,7 +2,7 @@
 Utility functions for the MSCI inclusion and digital transformation analysis
 """
 
-import loader.config as config
+import src.loader.config as config
 import pandas as pd
 import numpy as np
 import os

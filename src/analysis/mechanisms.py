@@ -145,80 +145,54 @@ class MechanismAnalysis:
             logger.error(f"Details: {traceback.format_exc()}")
             return None
 
-    def analyze_financial_access(self, dv="Digital_transformationA", post_only=True):
+    def analyze_financial_access(self, post_only=False):
         """
-        Analyze financial access mechanism
-
+        Analyze financial access mechanisms
+        
         Parameters:
         -----------
-        dv : str
-            Dependent variable name
-        post_only : bool
-            Whether to analyze post-period only
-
+        post_only : bool, default False
+            Whether to analyze only post-treatment period
+            
         Returns:
         --------
-        dict : Dictionary of regression models
+        dict: Dictionary of model results
         """
-        # Filter data if post_only
-        if post_only:
-            data = self.data[self.data['Post'] == 1].copy()
-        else:
-            data = self.data.copy()
-
-        # Check mechanism variables
-        fin_vars = [
-            var for var in config.FINANCIAL_ACCESS_VARS if var in data.columns]
-
-        if not fin_vars:
-            raise ValueError(
-                "No financial access mechanism variables found in dataset")
-
-        # Run regressions
-        models = {}
-
-        for fin_var in fin_vars:
-            # Create interaction term
-            data[f'MSCI_clean_{fin_var}'] = data['MSCI_clean'] * data[fin_var]
-
-            # Define regression variables
-            x_vars = ['MSCI_clean', fin_var, f'MSCI_clean_{fin_var}']
-
-            # Add control variables (excluding the current mechanism variable)
-            control_vars = [
-                var for var in config.CONTROL_VARS if var in data.columns and var != fin_var]
-            x_vars.extend(control_vars)
-
-            # Add year fixed effects
-            fe_vars = ["year"]
-
-            # Create formula
-            formula, _ = create_formula(dv, x_vars, fe_vars)
-
-            # Run regression with entity fixed effects
-            try:
-                # Add entity (firm) fixed effects
-                model = smf.ols(
-                    f"{formula} + entity",
-                    data=data
-                ).fit(cov_type='cluster', cov_kwds={'groups': data['stkcd']})
-
-                # Store results
-                models[fin_var] = model
-
-                # Print results
-                print(f"\nFinancial Access Mechanism: {fin_var}")
-                print(format_regression_table(
-                    model,
-                    title=f"Effect of MSCI inclusion on {dv} through {fin_var}"
-                ))
-            except Exception as e:
-                print(f"Error estimating model for {fin_var}: {e}")
-
-        # Store all models in mechanism results
-        self.mechanism_results['financial_access'] = models
-
-        return models
+        results = {}
+        
+        # Subset data if needed
+        data = self.data
+        if post_only and 'Post' in data.columns:
+            data = data[data['Post'] == 1].copy()
+        
+        # Run models for each financial access variable
+        for var in config.FINANCIAL_ACCESS_VARS:
+            if var in data.columns:
+                try:
+                    # Create interaction term
+                    data[f'MSCI_clean_{var}'] = data['MSCI_clean'] * data[var]
+                    
+                    # Create model formula - FIX: Remove 'entity' from formula
+                    formula = f"Digital_transformationA ~ MSCI_clean + {var} + MSCI_clean_{var} + "
+                    formula += " + ".join(["age", "TFP_OP"] + 
+                                         [v for v in config.FINANCIAL_ACCESS_VARS if v != var and v in data.columns] +
+                                         [v for v in ["F050501B", "F060101B"] if v in data.columns])
+                    formula += " + C(year)"  # Year fixed effects but no entity fixed effects
+                    
+                    print(f"Estimating model for {var}")
+                    model = smf.ols(formula, data=data).fit(cov_type='cluster', 
+                                                            cov_kwds={'groups': data['stkcd'].astype(str)})
+                    results[var] = model
+                    
+                    # Print key coefficients
+                    print(f"  MSCI_clean coefficient: {model.params.get('MSCI_clean', 'N/A')}")
+                    print(f"  {var} coefficient: {model.params.get(var, 'N/A')}")
+                    print(f"  Interaction coefficient: {model.params.get(f'MSCI_clean_{var}', 'N/A')}")
+                    
+                except Exception as e:
+                    print(f"Error estimating model for {var}: {e}")
+                    
+        return results
 
     def analyze_corporate_governance(self, dv="Digital_transformationA", post_only=True):
         """

@@ -2,7 +2,7 @@
 Descriptive statistics for MSCI inclusion and digital transformation analysis
 """
 
-from utils.util import save_results_to_file, check_balance
+from src.utils.util import save_results_to_file, check_balance
 import loader.config as config
 import pandas as pd
 import numpy as np
