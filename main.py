@@ -12,9 +12,12 @@ import matplotlib.pyplot as plt
 import pickle
 import time
 
+# Import centralized logging configuration first
+from log_setup import logger, setup_logging
+
 # Import project modules
-import loader.config as config
-from loader.data_preprocessing import DataPreprocessor
+import src.loader.config as config
+from src.loader.data_preprocessing import DataPreprocessor
 from src.analysis.descriptive import DescriptiveAnalysis
 from src.analysis.hypothesis import HypothesisTesting
 from src.analysis.models import ModelAnalysis
@@ -23,6 +26,9 @@ from src.visualization.descriptive_plots import DescriptivePlots
 from src.visualization.model_plots import ModelPlots
 from src.visualization.mechanism_plots import MechanismPlots
 from argument_parser import parse_arguments, validate_file_path
+
+# Ensure logging is properly configured
+setup_logging()
 
 
 def setup_directories():

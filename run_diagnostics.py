@@ -10,13 +10,20 @@ import argparse
 import traceback
 import numpy as np
 
-# Add this directory to the path to find modules
+# Add the src directory to the path to find modules
 sys.path.append(str(Path(__file__).parent))
+sys.path.append(str(Path(__file__).parent / "src"))
 
 # Import project modules
-import loader.config as config
-from loader.data_diagnostics import run_comprehensive_diagnostics
-from loader.config import logger, configure_logging
+from src.loader.data_diagnostics import run_comprehensive_diagnostics
+from src.loader.config import logger, configure_logging
+# Import the centralized data loader if it exists
+try:
+    from src.loader.data_loader import load_dataset, validate_dataframe
+    USE_CENTRALIZED_LOADER = True
+except ImportError:
+    USE_CENTRALIZED_LOADER = False
+    # Fallback to existing load_dataset function if centralized one not available
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Run data diagnostics')
@@ -34,174 +41,381 @@ def parse_args():
 
 def load_dataset(file_path, nrows=None, delimiter=None, encoding=None):
     """
-    Load dataset with resilient error handling for various file formats.
+    Load dataset with robust error handling for different file formats
+    
+    Parameters:
+    -----------
+    file_path : str or Path
+        Path to the data file
+    nrows : int or None
+        Number of rows to read (can improve performance)
+    delimiter : str or None
+        CSV delimiter, if specified (e.g., ',', '\t', ';')
+    encoding : str or None
+        File encoding (e.g., 'latin1', 'utf-8')
+        
+    Returns:
+    --------
+    tuple: (pd.DataFrame, str) - Loaded data and file format
     """
-    logger.info(f"Loading data from: {file_path}")
+    file_path = Path(file_path)
+    file_format = file_path.suffix.lower()[1:]  # Get file extension without dot
     
-    # Determine file format based on extension
-    file_format = 'csv'  # Default
-    if file_path.endswith('.dta'):
-        file_format = 'dta'
-    elif file_path.endswith('.pkl') or file_path.endswith('.pickle'):
-        file_format = 'pickle'
-        
-    # Handle different file formats
+    # Map delimiter string to actual character
+    if delimiter == 'tab':
+        delimiter = '\t'
+    
+    # For Stata files
     if file_format == 'dta':
-        try:
-            logger.info(f"Loading Stata file: {file_path}")
-            # Try with pyreadstat first if available
-            try:
-                import pyreadstat
-                df, meta = pyreadstat.read_dta(file_path)
-                logger.info(f"Success! Read {len(df)} rows with {df.shape[1]} columns using pyreadstat")
-                return df, file_format
-            except ImportError:
-                # Fall back to pandas
-                df = pd.read_stata(file_path, convert_categoricals=False)
-                if nrows is not None:
-                    df = df.head(nrows)
-                logger.info(f"Success! Read {len(df)} rows with {df.shape[1]} columns using pandas")
-                return df, file_format
-        except Exception as e:
-            logger.warning(f"Failed to load Stata file: {e}")
-            logger.warning("Attempting to load as CSV...")
-            # Fall through to CSV loading
-    elif file_format == 'pickle':
-        try:
-            logger.info(f"Loading pickle file: {file_path}")
-            df = pd.read_pickle(file_path)
-            if nrows is not None:
-                df = df.head(nrows)
-            logger.info(f"Success! Read {len(df)} rows with {df.shape[1]} columns")
-            return df, file_format
-        except Exception as e:
-            logger.warning(f"Failed to load pickle file: {e}")
-            logger.warning("Attempting to load as CSV...")
-            # Fall through to CSV loading
-    
-    # Define loading strategies for CSV files in order of preference
-    loading_strategies = []
-    
-    # If delimiter is specified, try it first
-    if delimiter:
-        if delimiter == 'tab':
-            delimiter = '\t'
-        loading_strategies.append({
-            'sep': delimiter, 
-            'engine': 'python', 
-            'on_bad_lines': 'skip',
-            'encoding': encoding or 'utf-8'
-        })
+        logger.info(f"Loading Stata file: {file_path}")
         
-        # Also try with latin1 encoding - this is often needed for tab-delimited files
-        loading_strategies.append({
-            'sep': delimiter, 
-            'engine': 'python', 
-            'on_bad_lines': 'skip',
-            'encoding': 'latin1'
-        })
-    else:
-        # Default strategies
-        loading_strategies.extend([
-            {'engine': 'python', 'on_bad_lines': 'skip'},
-            {'sep': '\t', 'engine': 'python', 'on_bad_lines': 'skip'},
-            {'engine': 'python', 'sep': None, 'on_bad_lines': 'skip'},
-            {'engine': 'python', 'encoding': 'utf-8', 'on_bad_lines': 'skip'},
-            {'engine': 'python', 'encoding': 'latin1', 'on_bad_lines': 'skip'},
-            # Add strategy that combines tab delimiter with Latin-1 encoding
-            {'sep': '\t', 'engine': 'python', 'encoding': 'latin1', 'on_bad_lines': 'skip'},
-            {'sep': '\t', 'engine': 'c', 'on_bad_lines': 'skip'},
-        ])
-    
-    loaded_single_column = False
-    single_column_data = None
-    
-    for i, params in enumerate(loading_strategies, 1):
+        # Try pyreadstat first (better handling of encodings)
         try:
-            logger.info(f"Attempt {i}: Reading with {params}")
-            
-            if nrows is not None:
-                params['nrows'] = nrows
-                
-            df = pd.read_csv(file_path, **params)
-            logger.info(f"Success! Read {len(df)} rows with {df.shape[1]} columns")
-            
-            # Check if we have a single column with tabs - this indicates the delimiter is wrong
-            if df.shape[1] == 1 and '\t' in str(df.iloc[0, 0]):
-                logger.warning("File loaded as single column with tabs. Retrying with explicit tab delimiter.")
-                loaded_single_column = True
-                single_column_data = df  # Save for fallback
-                continue
-                
-            return df, 'csv'
-            
+            import pyreadstat
+            df, meta = pyreadstat.read_dta(str(file_path))
+            logger.info(f"Successfully loaded Stata file with pyreadstat, shape: {df.shape}")
+            return df, 'dta'
         except Exception as e:
-            logger.warning(f"Attempt {i} failed: {str(e)}")
-    
-    # If we got here, all attempts failed but we might have a single column loaded
-    if loaded_single_column and single_column_data is not None:
-        logger.warning("All loading attempts failed. Attempting to manually parse the tab-delimited data.")
+            logger.warning(f"Error loading Stata file with pyreadstat: {e}")
+            logger.warning("Falling back to pandas read_stata.")
+            
+        # Try pandas read_stata
         try:
-            # Get the header row
-            header = single_column_data.columns[0]
-            headers = header.split('\t')
+            df = pd.read_stata(file_path, convert_categoricals=False)
+            logger.info(f"Successfully loaded Stata file with pandas, shape: {df.shape}")
+            return df, 'dta'
+        except Exception as e:
+            logger.error(f"Error loading Stata file with pandas: {e}")
+            logger.info("Attempting to load Stata file using iterator...")
             
-            # Process a small sample of rows
-            rows_to_process = min(5000, len(single_column_data))
-            sample_data = []
-            
-            for idx in range(rows_to_process):
-                try:
-                    row_str = single_column_data.iloc[idx, 0]
-                    if isinstance(row_str, str):
-                        values = row_str.split('\t')
-                        # Ensure the row has the right number of columns
-                        if len(values) < len(headers):
-                            values.extend([''] * (len(headers) - len(values)))
-                        elif len(values) > len(headers):
-                            values = values[:len(headers)]
-                        sample_data.append(values)
-                except Exception as row_e:
-                    logger.warning(f"Error processing row {idx}: {str(row_e)}")
-                    continue
-            
-            # Create a DataFrame from the processed data
-            if sample_data:
-                manual_df = pd.DataFrame(sample_data, columns=headers)
-                logger.info(f"Manually created DataFrame with {len(manual_df)} rows and {len(headers)} columns")
-                return manual_df, 'csv'
-        except Exception as parse_e:
-            logger.error(f"Manual parsing failed: {str(parse_e)}")
+        # Try with iterator (for very large files)
+        try:
+            chunks = []
+            itr = pd.read_stata(file_path, iterator=True, chunksize=10000)
+            for chunk in itr:
+                chunks.append(chunk)
+            df = pd.concat(chunks)
+            logger.info(f"Successfully loaded Stata file with iterator, shape: {df.shape}")
+            return df, 'dta'
+        except Exception as e:
+            logger.error(f"All methods for loading Stata file failed. Last error: {e}")
+            logger.warning("Failed to load Stata file. Attempting to load as CSV...")
     
-    # Last resort: try reading first few lines with explicit encoding
+    # CSV Files (or fallback for Stata files)
+    logger.info(f"Loading CSV file: {file_path}")
+    
+    # For extremely large files, try chunked reading approach first
+    logger.info("Attempting to load file in chunks for large dataset handling")
     try:
-        with open(file_path, 'r', encoding='latin1') as f:
-            header = f.readline().strip()
-            if '\t' in header:
-                headers = header.split('\t')
-                
-                # Read a few more lines for sample data
-                sample_data = []
-                for _ in range(10):  # Read 10 lines
-                    line = f.readline().strip()
-                    if line:
-                        values = line.split('\t')
-                        # Normalize length
-                        if len(values) < len(headers):
-                            values.extend([''] * (len(headers) - len(values)))
-                        elif len(values) > len(headers):
-                            values = values[:len(headers)]
-                        sample_data.append(values)
-                
-                # Create DataFrame from sample
-                if sample_data:
-                    emergency_df = pd.DataFrame(sample_data, columns=headers)
-                    logger.info(f"Created emergency sample with {len(emergency_df)} rows for diagnostics")
-                    return emergency_df, 'csv'
-    except Exception as last_e:
-        logger.error(f"Last resort parsing failed: {str(last_e)}")
+        # Try loading first chunk to detect structure
+        chunk_size = 50000  # Smaller chunks to avoid buffer issues
+        chunks = []
+        
+        # Use C engine with latin1 encoding and tab delimiter first (based on previous success)
+        chunk_iter = pd.read_csv(
+            file_path,
+            sep='\t',
+            encoding='latin1',
+            engine='c',
+            chunksize=chunk_size,
+            low_memory=True,     # Changed to True for better memory management
+            on_bad_lines='warn'  # Updated from error_bad_lines to on_bad_lines
+        )
+        
+        # Read limited number of chunks for analysis (avoid loading entire file)
+        max_chunks = 20 if nrows is None else max(1, nrows // chunk_size + 1)
+        for i, chunk in enumerate(chunk_iter):
+            if i >= max_chunks:
+                break
+            chunks.append(chunk)
+            logger.info(f"Loaded chunk {i+1} with {len(chunk)} rows")
+        
+        # Combine chunks
+        if chunks:
+            df = pd.concat(chunks, ignore_index=True)
+            logger.info(f"Successfully loaded data in chunks: {len(df)} rows × {df.shape[1]} columns")
+            return df, 'csv'
+        
+    except Exception as e:
+        logger.warning(f"Chunked loading approach failed: {e}")
+        logger.info("Falling back to standard loading methods")
+        
+        # Try another chunking approach with Python engine
+        try:
+            logger.info("Trying alternate chunking method with Python engine...")
+            chunk_iter = pd.read_csv(
+                file_path,
+                sep='\t',
+                encoding='latin1',
+                engine='python',
+                chunksize=chunk_size,
+                on_bad_lines='skip'
+            )
+            
+            chunks = []
+            max_chunks = 20 if nrows is None else max(1, nrows // chunk_size + 1)
+            for i, chunk in enumerate(chunk_iter):
+                if i >= max_chunks:
+                    break
+                chunks.append(chunk)
+                logger.info(f"Loaded chunk {i+1} with {len(chunk)} rows")
+            
+            if chunks:
+                df = pd.concat(chunks, ignore_index=True)
+                logger.info(f"Successfully loaded data with alternate chunking method: {len(df)} rows × {df.shape[1]} columns")
+                return df, 'csv'
+        except Exception as e2:
+            logger.warning(f"Alternate chunking method failed: {e2}")
+            logger.info("Continuing to try standard loading methods")
     
-    logger.error(f"Failed to load {file_path} after all attempts.")
+    # Check encoding first - use chardet if available
+    detected_encoding = None
+    detected_confidence = 0
+    try:
+        import chardet
+        with open(file_path, 'rb') as f:
+            # Read a chunk of file to detect encoding (first 100k bytes)
+            raw_data = f.read(100000)
+            result = chardet.detect(raw_data)
+            detected_encoding = result['encoding']
+            detected_confidence = result['confidence']
+            logger.info(f"Detected encoding: {detected_encoding} with {detected_confidence*100:.1f}% confidence")
+    except (ImportError, Exception) as e:
+        logger.info(f"Couldn't detect encoding automatically: {str(e)}")
+    
+    # If specified encoding or low confidence detection, try multiple encodings
+    if encoding or detected_confidence < 0.9:
+        logger.warning("Low confidence encoding detection, will try common encodings")
+        
+        # Define the loading attempts - optimized based on the successful pattern in logs
+        # Prioritize tab delimiter with latin1 encoding which worked in the logs
+        attempts = []
+        
+        # First try user-specified options
+        if delimiter and encoding:
+            attempts.append({
+                'sep': delimiter, 
+                'engine': 'python', 
+                'on_bad_lines': 'skip',
+                'encoding': encoding
+                # Removed low_memory parameter when using python engine
+            })
+        
+        # Add most common options, prioritizing latin1 with tab delimiter
+        attempts.extend([
+            # TAB DELIMITER WITH LATIN1 (this worked in the logs)
+            {'sep': '\t', 'engine': 'python', 'on_bad_lines': 'skip', 'encoding': 'latin1'},
+            
+            # COMMA DELIMITER OPTIONS
+            {'sep': ',', 'engine': 'python', 'on_bad_lines': 'skip', 'encoding': 'utf-8'},
+            {'sep': ',', 'engine': 'python', 'on_bad_lines': 'skip', 'encoding': 'latin1'},
+            {'sep': ',', 'engine': 'python', 'on_bad_lines': 'skip', 'encoding': 'gbk'},
+            {'sep': ',', 'engine': 'python', 'on_bad_lines': 'skip', 'encoding': 'gb18030'},
+            
+            # OTHER TAB DELIMITER OPTIONS
+            {'sep': '\t', 'engine': 'python', 'on_bad_lines': 'skip', 'encoding': 'utf-8'},
+            {'sep': '\t', 'engine': 'python', 'on_bad_lines': 'skip', 'encoding': 'gbk'},
+            {'sep': '\t', 'engine': 'python', 'on_bad_lines': 'skip', 'encoding': 'gb18030'},
+            
+            # SEMICOLON DELIMITER OPTIONS
+            {'sep': ';', 'engine': 'python', 'on_bad_lines': 'skip', 'encoding': 'utf-8'},
+            {'sep': ';', 'engine': 'python', 'on_bad_lines': 'skip', 'encoding': 'latin1'},
+            {'sep': ';', 'engine': 'python', 'on_bad_lines': 'skip', 'encoding': 'gbk'},
+            {'sep': ';', 'engine': 'python', 'on_bad_lines': 'skip', 'encoding': 'gb18030'},
+            
+            # AUTO-DETECT DELIMITER OPTIONS
+            {'sep': None, 'engine': 'python', 'on_bad_lines': 'skip', 'encoding': 'utf-8'},
+            {'sep': None, 'engine': 'python', 'on_bad_lines': 'skip', 'encoding': 'latin1'},
+            {'sep': None, 'engine': 'python', 'on_bad_lines': 'skip', 'encoding': 'gbk'},
+            {'sep': None, 'engine': 'python', 'on_bad_lines': 'skip', 'encoding': 'gb18030'},
+            
+            # Try default C engine with low_memory option
+            {'sep': '\t', 'engine': 'c', 'encoding': 'latin1', 'low_memory': False},
+            {'sep': ',', 'engine': 'c', 'encoding': 'latin1', 'low_memory': False},
+            {'sep': ';', 'engine': 'c', 'encoding': 'latin1', 'low_memory': False},
+        ])
+        
+        # Try each attempt
+        expected_cols = ['Digital_transformationA', 'Digital_transformationB', 'Treat', 'Post', 'MSCI']
+        best_df = None
+        best_match_count = 0
+        
+        for i, params in enumerate(attempts):
+            logger.info(f"CSV attempt {i+1}: Reading with {params}")
+            try:
+                # Only add nrows parameter, not low_memory with python engine
+                if 'engine' in params and params['engine'] == 'python' and 'low_memory' in params:
+                    del params['low_memory']  # Remove low_memory if python engine is used
+                    
+                df = pd.read_csv(file_path, **params, nrows=nrows)
+                
+                # Check if dataframe was read properly
+                if df.shape[1] == 1:
+                    # Check if this looks like a delimiter issue
+                    first_col_name = df.columns[0]
+                    if any(sep in first_col_name for sep in ['\t', ',', ';']):
+                        logger.warning("File loaded as single column with separators. Current strategy not optimal.")
+                        # Continue to try next strategy
+                    else:
+                        logger.info(f"Success! Read {len(df)} rows with {df.shape[1]} columns")
+                        # Keep track of this as potential best result
+                        found_cols = [col for col in expected_cols if col in df.columns]
+                        if len(found_cols) > best_match_count:
+                            best_df = df
+                            best_match_count = len(found_cols)
+                            # If we found all expected columns, no need to keep trying
+                            if len(found_cols) == len(expected_cols):
+                                logger.info(f"Found {len(found_cols)}/{len(expected_cols)} expected columns: {found_cols}")
+                                return df, 'csv'
+                        else:
+                            logger.warning("Loaded data but found none of the expected columns. Continuing to search for better loading strategy.")
+                else:
+                    logger.info(f"Success! Read {len(df)} rows with {df.shape[1]} columns")
+                    # Check if we have our key columns
+                    found_cols = [col for col in expected_cols if col in df.columns]
+                    if len(found_cols) > best_match_count:
+                        best_df = df
+                        best_match_count = len(found_cols)
+                        # If we found all expected columns, no need to keep trying
+                        if len(found_cols) == len(expected_cols):
+                            logger.info(f"Found {len(found_cols)}/{len(expected_cols)} expected columns: {found_cols}")
+                            return df, 'csv'
+                    elif len(found_cols) > 0:
+                        logger.info(f"Found {len(found_cols)}/{len(expected_cols)} expected columns: {found_cols}")
+                        return df, 'csv'
+            except Exception as e:
+                logger.warning(f"CSV attempt {i+1} failed: {str(e)}")
+        
+        # If we tried all attempts and have a best_df with at least some matches, return it
+        if best_df is not None:
+            found_cols = [col for col in expected_cols if col in best_df.columns]
+            logger.info(f"Found {len(found_cols)}/{len(expected_cols)} expected columns: {found_cols}")
+            return best_df, 'csv'
+        
+        logger.error(f"Failed to load {file_path} after all attempts.")
+        return None, None
+    
+    # If we have high confidence in detected encoding, use it directly
+    else:
+        try:
+            # Use C engine when using low_memory parameter
+            df = pd.read_csv(
+                file_path, 
+                sep=delimiter or ',',
+                encoding=detected_encoding,
+                engine='c',  # Changed to C engine to support low_memory
+                on_bad_lines='skip',
+                nrows=nrows,
+                low_memory=False
+            )
+            logger.info(f"Loaded data with detected encoding {detected_encoding}. Shape: {df.shape}")
+            return df, 'csv'
+        except Exception as e:
+            logger.error(f"Error loading with detected encoding {detected_encoding}: {e}")
+            logger.warning("Falling back to Latin-1 encoding with tab delimiter...")
+            
+            # Fallback to Latin-1 with tab delimiter as it worked in the logs
+            try:
+                df = pd.read_csv(
+                    file_path, 
+                    sep='\t',
+                    encoding='latin1',
+                    engine='c',  # Changed to C engine to support low_memory
+                    on_bad_lines='skip',
+                    nrows=nrows,
+                    low_memory=False
+                )
+                logger.info(f"Successfully loaded with Latin-1 encoding and tab delimiter. Shape: {df.shape}")
+                return df, 'csv'
+            except Exception as e2:
+                # Try once more without low_memory option
+                try:
+                    df = pd.read_csv(
+                        file_path, 
+                        sep='\t',
+                        encoding='latin1',
+                        engine='python',
+                        on_bad_lines='skip',
+                        nrows=nrows
+                    )
+                    logger.info(f"Successfully loaded with fallback method (no low_memory). Shape: {df.shape}")
+                    return df, 'csv'
+                except Exception as e3:
+                    logger.error(f"All fallback loading attempts failed. Last error: {e3}")
+                    return None, None
+
+    # Last resort: try reading raw file to diagnose issues
+    logger.warning("All standard loading methods failed. Attempting raw file inspection.")
+    try:
+        # Read first few lines of the file directly to diagnose issues
+        with open(file_path, 'rb') as f:
+            header = f.readline().decode('latin1', errors='replace')
+            logger.info(f"File header: {header[:100]}...")
+            
+            # Try ultra-conservative approach: read file in small pieces with manual parsing
+            logger.info("Trying manual file reading approach...")
+            
+            # Read just the first 1000 lines to get a sample
+            lines = []
+            for i in range(1000):
+                try:
+                    line = f.readline().decode('latin1', errors='replace')
+                    if not line:
+                        break
+                    lines.append(line)
+                except:
+                    break
+            
+            if lines:
+                # Count columns based on delimiter guesses
+                delimiters = ['\t', ',', ';']
+                counts = {d: header.count(d) for d in delimiters}
+                best_delimiter = max(counts.items(), key=lambda x: x[1])[0]
+                logger.info(f"Detected likely delimiter: '{best_delimiter}' (count: {counts[best_delimiter]})")
+                
+                # Create a StringIO object to read the lines
+                import io
+                data_str = ''.join(lines)
+                data_io = io.StringIO(data_str)
+                
+                # Try to read with pandas
+                try:
+                    df = pd.read_csv(
+                        data_io,
+                        sep=best_delimiter,
+                        encoding='latin1',
+                        engine='python',
+                        on_bad_lines='skip'
+                    )
+                    logger.info(f"Successfully loaded sample with manual approach: {df.shape}")
+                    
+                    if len(df) > 0:
+                        logger.info("Sample loaded successfully. Now trying to read full file with established parameters...")
+                        
+                        # Now try to read the full file with these parameters
+                        try:
+                            full_df = pd.read_csv(
+                                file_path,
+                                sep=best_delimiter,
+                                encoding='latin1',
+                                engine='python',
+                                on_bad_lines='skip',
+                                nrows=nrows,
+                                memory_map=True
+                            )
+                            logger.info(f"Successfully loaded full file: {full_df.shape}")
+                            return full_df, 'csv'
+                        except Exception as e:
+                            logger.error(f"Failed to load full file after successful sample loading: {e}")
+                            # Return the sample as better than nothing
+                            logger.warning(f"Returning sample data ({len(df)} rows) for analysis")
+                            return df, 'csv'
+                except Exception as e:
+                    logger.error(f"Failed to read sample data: {e}")
+    except Exception as e:
+        logger.error(f"Raw file inspection failed: {e}")
+    
+    logger.error(f"All loading methods failed for {file_path}")
     return None, None
 
 def main():
@@ -217,7 +431,7 @@ def main():
     
     # Determine input file
     input_file = args.data_file
-    if input_file is None:
+    if (input_file is None):
         # Default data locations to check
         candidates = [
             Path('dataset/msci_dt_processed_2010_2023.csv'),
@@ -234,6 +448,8 @@ def main():
             logger.error("No data file specified and no default data file found.")
             return
     
+    logger.info(f"Loading data from: {input_file}")
+    
     # Load dataset with appropriate parameters
     nrows = 10000 if args.sample else args.nrows
     df, file_format = load_dataset(input_file, nrows=nrows, 
@@ -243,6 +459,19 @@ def main():
     if df is None:
         logger.error("Failed to load dataset. Exiting.")
         return
+    
+    # If we have the centralized loader, validate the data
+    if USE_CENTRALIZED_LOADER:
+        validation = validate_dataframe(df)
+        if not validation["is_valid"]:
+            logger.warning("Data validation detected issues:")
+            for issue in validation["issues"]:
+                logger.warning(f"- {issue}")
+            
+            if validation["warnings"]:
+                logger.info("Data validation warnings:")
+                for warning in validation["warnings"]:
+                    logger.info(f"- {warning}")
     
     # Run diagnostics with file format information
     run_comprehensive_diagnostics(df, file_format=file_format)

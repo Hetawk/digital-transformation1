@@ -13,6 +13,9 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
 
+# Import our centralized data loading functions
+from loader.data_loader import load_dataset, validate_dataframe
+
 # Set up logger
 logger = logging.getLogger('digital_transformation')
 if not logger.handlers:
@@ -42,165 +45,54 @@ class DataPreprocessor:
         if self.data_file and not Path(self.data_file).suffix:
             self.data_file = f"{self.data_file}.{self.file_format}"
 
-    def _load_data(self, data_file=None):
+    def load_data(self, delimiter=None, encoding=None):
         """
-        Load data from file
-        
+        Load the dataset from file using the centralized data loader
+
         Parameters:
         -----------
-        data_file : str or Path, optional
-            Path to data file
-            
+        delimiter : str or None
+            Delimiter for CSV files (e.g., ',', '\t')
+        encoding : str or None
+            File encoding to use
+
         Returns:
         --------
-        pd.DataFrame: Loaded data
+        pd.DataFrame: Loaded DataFrame
         """
-        if data_file is None:
+        if self.data_file is None:
             logger.error("No data file provided. Aborting.")
             sys.exit(1)
         
-        data_path = Path(data_file)
+        data_path = Path(self.data_file)
         if not data_path.exists():
             logger.error(f"Data file not found: {data_path}")
             sys.exit(1)
         
         logger.info(f"Found data file: {data_path}")
         
-        # Auto-detect file type based on extension or use specified format
-        file_ext = data_path.suffix.lower()[1:] if data_path.suffix else self.file_format
+        # Use the centralized data loader
+        self.data, detected_format = load_dataset(
+            data_path, 
+            delimiter=delimiter, 
+            encoding=encoding
+        )
         
-        # Try Stata file if it has .dta extension
-        if file_ext == 'dta':
-            try:
-                logger.info("Detected Stata file format, attempting to load...")
-                # Try using pyreadstat if available (better for complex Stata files)
-                try:
-                    import pyreadstat
-                    data, meta = pyreadstat.read_dta(str(data_path))
-                    logger.info(f"Successfully loaded Stata file using pyreadstat: {len(data)} rows")
-                    return data
-                except ImportError:
-                    # Fall back to pandas read_stata
-                    data = pd.read_stata(str(data_path))
-                    logger.info(f"Successfully loaded Stata file using pandas: {len(data)} rows")
-                    return data
-            except Exception as e:
-                logger.error(f"Error loading Stata file: {e}")
-                logger.info("Attempting CSV methods as fallback...")
+        if self.data is None:
+            logger.error(f"Failed to load data from {data_path}. Aborting.")
+            sys.exit(1)
         
-        # For CSV or as fallback for failed Stata load
-        # Method 1: Try with auto-detected encoding using chardet
-        try:
-            # Sample file to detect encoding
-            import chardet
-            with open(data_path, 'rb') as f:
-                sample_data = f.read(10000)  # Read first 10KB
-                encoding_result = chardet.detect(sample_data)
+        # Validate the loaded data
+        validation = validate_dataframe(self.data)
+        if not validation["is_valid"]:
+            logger.warning(f"Loaded data may have issues: {validation['issues']}")
+            if validation["warnings"]:
+                for warning in validation["warnings"]:
+                    logger.warning(f"Warning: {warning}")
+        else:
+            logger.info(f"Data validation passed. Found {len(validation['expected_columns_found'])} expected columns.")
             
-            detected_encoding = encoding_result['encoding']
-            confidence = encoding_result['confidence']
-            logger.info(f"Detected encoding: {detected_encoding} with {confidence*100:.1f}% confidence")
-            
-            if confidence > 0.7:  # Only use if confidence is reasonable
-                logger.info(f"Attempting to load data with detected encoding: {detected_encoding}")
-                # Try with different delimiters
-                for sep in [',', '\t', ';']:
-                    try:
-                        data = pd.read_csv(data_path, encoding=detected_encoding, sep=sep, 
-                                          engine='python', on_bad_lines='skip')
-                        if len(data.columns) > 1:  # Successfully parsed into multiple columns
-                            logger.info(f"Successfully loaded data using encoding={detected_encoding}, sep='{sep}'")
-                            return data
-                    except Exception as inner_e:
-                        continue  # Try next delimiter
-        except ImportError:
-            logger.warning("chardet not installed, skipping encoding detection")
-        except Exception as e:
-            logger.warning(f"Error during encoding detection: {e}")
-        
-        # Method 2: Try chunking with python engine
-        try:
-            logger.info("Attempting to load data with chunking and python engine...")
-            chunks = []
-            for chunk in pd.read_csv(data_path, encoding='utf-8', engine='python', 
-                                   on_bad_lines='skip', chunksize=10000):
-                chunks.append(chunk)
-            
-            if chunks:
-                data = pd.concat(chunks)
-                logger.info(f"Successfully loaded data using chunking method: {len(data)} rows")
-                return data
-        except Exception as e1:
-            logger.warning(f"Method 2 failed with error: {e1}")
-        
-        # Method 3: Try with flexible delimiter
-        try:
-            logger.info("Attempting to load data with flexible delimiter...")
-            data = pd.read_csv(data_path, encoding='latin1', sep=None, 
-                              engine='python', on_bad_lines='skip')
-            logger.info(f"Successfully loaded data using flexible delimiter: {len(data)} rows")
-            return data
-        except Exception as e2:
-            logger.warning(f"Method 3 failed with error: {e2}")
-        
-        # Method 4: Manual line-by-line reading as last resort
-        try:
-            logger.info("Attempting to read file line by line...")
-            with open(data_path, 'rb') as f:
-                # Read first line to get header
-                header_line = f.readline()
-                # Try different encodings for header
-                header = None
-                for enc in ['utf-8', 'latin1', 'gbk', 'gb18030']:
-                    try:
-                        header = header_line.decode(enc).strip().split(',')
-                        if len(header) > 1:  # Valid header with multiple columns
-                            break
-                    except:
-                        continue
-                
-                if not header or len(header) <= 1:
-                    logger.error("Failed to decode header with any supported encoding")
-                    sys.exit(1)
-                
-                # Read remaining lines, skipping problematic ones
-                rows = []
-                for i, line in enumerate(f):
-                    try:
-                        # Try different encodings for each line
-                        for enc in ['utf-8', 'latin1', 'gbk', 'gb18030']:
-                            try:
-                                row = line.decode(enc).strip().split(',')
-                                if len(row) == len(header):  # Only include rows with correct number of columns
-                                    rows.append(row)
-                                    break
-                            except:
-                                continue
-                    except Exception as line_error:
-                        if i < 10:  # Only print first few errors
-                            logger.warning(f"  Skipping line {i+2}: {str(line_error)[:100]}...")
-                
-                # Create DataFrame
-                if rows:
-                    data = pd.DataFrame(rows, columns=header)
-                    logger.info(f"Successfully loaded data line by line: {len(data)} rows")
-                    return data
-        except Exception as e3:
-            logger.error(f"Method 4 failed with error: {e3}")
-        
-        # If all methods failed, exit with error
-        logger.error("All data loading methods failed. Unable to read data file.")
-        sys.exit(1)
-
-    def load_data(self):
-        """
-        Load the dataset from file
-
-        Returns:
-        --------
-        pd.DataFrame: Loaded DataFrame
-        """
-        self.data = self._load_data(self.data_file)
+        logger.info(f"Successfully loaded data: {len(self.data)} rows, {self.data.shape[1]} columns")
         return self.data
 
     def check_variables(self):

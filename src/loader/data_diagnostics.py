@@ -17,15 +17,11 @@ import statsmodels.api as sm
 import json
 from datetime import datetime
 
-# Set up logger
-logger = logging.getLogger('digital_transformation')
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', 
-                                 datefmt='%Y-%m-%d %H:%M:%S')
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
+# Import centralized logger
+sys.path.append(str(Path(__file__).parent.parent.parent))
+from log_setup import logger
+
+# No need to set up logger here, using the centralized one
 
 def analyze_missing_data(data, output_dir=None):
     """
@@ -43,8 +39,8 @@ def analyze_missing_data(data, output_dir=None):
     pd.DataFrame: Summary of missing data
     """
     if output_dir is None:
-        from loader.config import TABLES_DIR
-        output_dir = TABLES_DIR / "diagnostics"
+        from loader.config import TABLES_DIR, RESULTS_DIR
+        output_dir = RESULTS_DIR / TABLES_DIR / "diagnostics"
     else:
         output_dir = Path(output_dir)
     
@@ -99,28 +95,67 @@ def analyze_missing_data(data, output_dir=None):
         group_vars = [v for v in ['Treat', 'Post'] if v in data.columns]
         if group_vars:
             try:
-                # Fix: Add a prefix to avoid column name conflicts
-                missing_by_group = data.groupby(group_vars)[key_cols].apply(
-                    lambda x: 100 * x.isna().mean()
-                ).reset_index()
+                # Fix for column name conflict
+                # First create a copy of the data with just the columns we need
+                data_subset = data[group_vars + key_cols].copy()
                 
-                # Rename columns if there's a conflict
-                for col in missing_by_group.columns:
-                    if col in group_vars and col in key_cols:
-                        missing_by_group = missing_by_group.rename(columns={col: f"group_{col}"})
+                # Add prefix to key_cols that overlap with group_vars to avoid conflicts
+                key_cols_for_analysis = []
+                for col in key_cols:
+                    if col in group_vars:
+                        # Skip columns used for grouping
+                        continue
+                    else:
+                        key_cols_for_analysis.append(col)
                 
-                missing_by_group.to_csv(output_dir / "missing_by_treatment_group.csv", index=False)
+                if key_cols_for_analysis:
+                    # Group by treatment variables and calculate missing percentage
+                    missing_by_group = data_subset.groupby(group_vars)[key_cols_for_analysis].apply(
+                        lambda x: 100 * x.isna().mean()
+                    ).reset_index()
+                    
+                    missing_by_group.to_csv(output_dir / "missing_by_treatment_group.csv", index=False)
+                    logger.info("Exported missing data by treatment groups")
+                else:
+                    logger.warning("No unique key columns found after removing group variables")
+                    # Create a simple file explaining the issue
+                    with open(output_dir / "missing_by_treatment_group.txt", "w") as f:
+                        f.write("Could not generate missing by treatment group analysis.\n")
+                        f.write(f"All key columns ({key_cols}) are used as grouping variables ({group_vars}).\n")
             except Exception as e:
                 logger.error(f"Error analyzing missing data by groups: {e}")
-                # Create a simpler version without reset_index, which is likely causing the issue
+                # Fall back to using a simpler approach without reset_index
                 try:
-                    simple_missing = data.groupby(group_vars)[key_cols].apply(
-                        lambda x: 100 * x.isna().mean()
-                    )
-                    simple_missing.to_csv(output_dir / "missing_by_treatment_group.csv")
+                    # Direct group by without reset_index
+                    simple_missing = {}
+                    
+                    # Process each treatment group separately
+                    for name, group in data.groupby(group_vars):
+                        # Create a readable group name
+                        if len(group_vars) == 1:
+                            group_name = f"{group_vars[0]}_{name}"
+                        else:
+                            # Multiple grouping variables
+                            group_name = "_".join([f"{var}_{val}" for var, val in zip(group_vars, name)])
+                        
+                        # Calculate missing percentage for key columns
+                        missing_pct = {}
+                        for col in key_cols:
+                            if col not in group_vars:  # Skip grouping variables
+                                missing_pct[col] = 100 * group[col].isna().mean()
+                        
+                        simple_missing[group_name] = missing_pct
+                    
+                    # Convert to DataFrame
+                    simple_missing_df = pd.DataFrame(simple_missing).transpose()
+                    simple_missing_df.to_csv(output_dir / "missing_by_treatment_group.csv")
                     logger.info("Used alternative method to export missing data by groups")
                 except Exception as e2:
                     logger.error(f"Alternative method also failed: {e2}")
+                    # Create an error file
+                    with open(output_dir / "missing_by_treatment_group_error.txt", "w") as f:
+                        f.write(f"Error analyzing missing data by groups: {e}\n")
+                        f.write(f"Second attempt also failed: {e2}\n")
     else:
         # Create a simple file indicating no missing data
         with open(output_dir / "no_missing_data.txt", "w") as f:
@@ -161,22 +196,59 @@ def calculate_vif(data, variables=None, output_dir=None):
     if variables is None:
         variables = data.select_dtypes(include=['number']).columns.tolist()
     
+    # Check for mixed types and convert to numeric when needed
+    numeric_data = pd.DataFrame()
+    skipped_vars = []
+    
+    for var in variables:
+        try:
+            # Check if the column is already numeric
+            if pd.api.types.is_numeric_dtype(data[var]):
+                numeric_data[var] = data[var]
+            else:
+                # Try to convert to numeric
+                numeric_data[var] = pd.to_numeric(data[var], errors='coerce')
+                logger.info(f"Converted column '{var}' to numeric")
+        except Exception as e:
+            skipped_vars.append((var, str(e)))
+            logger.warning(f"Skipping column '{var}' due to conversion error: {e}")
+    
+    # Check if we have any variables left
+    if numeric_data.empty or len(numeric_data.columns) < 2:
+        logger.error(f"Not enough numeric variables for VIF calculation. Found: {len(numeric_data.columns)}")
+        
+        # Save error report
+        with open(output_dir / "vif_analysis_error.txt", "w") as f:
+            f.write(f"Error calculating VIF: Not enough numeric variables\n")
+            f.write(f"Variables requested: {variables}\n")
+            f.write(f"Variables skipped: {skipped_vars}\n")
+        
+        return pd.DataFrame({"Variable": variables, "VIF": np.nan, "Error": "Not a numeric variable"})
+    
     # Check for missing values
-    data_subset = data[variables].dropna()
+    data_subset = numeric_data.dropna()
     
     if len(data_subset) < len(data):
         logger.warning(f"Dropping {len(data) - len(data_subset)} rows with missing values for VIF calculation")
     
     # Calculate VIF
     vif_data = pd.DataFrame()
-    vif_data["Variable"] = variables
+    vif_data["Variable"] = numeric_data.columns.tolist()
+    vif_data["VIF"] = np.nan
+    vif_data["Error"] = ""
     
     try:
-        # Fix: Use sm.add_constant instead of smo.add_constant
+        # Use sm.add_constant and handle errors
         X = sm.add_constant(data_subset)
         
-        # Calculate VIF for each variable
-        vif_data["VIF"] = [variance_inflation_factor(X.values, i+1) for i in range(len(variables))]
+        # Calculate VIF for each variable, handling errors individually
+        for i, var in enumerate(numeric_data.columns):
+            try:
+                vif_value = variance_inflation_factor(X.values, i+1)
+                vif_data.loc[i, "VIF"] = vif_value
+            except Exception as e:
+                vif_data.loc[i, "Error"] = str(e)
+                logger.warning(f"Error calculating VIF for variable '{var}': {e}")
         
         # Sort by VIF value
         vif_data = vif_data.sort_values("VIF", ascending=False)
@@ -185,7 +257,7 @@ def calculate_vif(data, variables=None, output_dir=None):
         vif_data.to_csv(output_dir / "vif_analysis.csv", index=False)
         
         # Log high VIF values
-        high_vif = vif_data[vif_data["VIF"] > 5]
+        high_vif = vif_data[(vif_data["VIF"] > 5) & (~vif_data["VIF"].isna())]
         if not high_vif.empty:
             logger.warning(f"High multicollinearity detected (VIF > 5):")
             for _, row in high_vif.iterrows():
@@ -196,7 +268,20 @@ def calculate_vif(data, variables=None, output_dir=None):
         
     except Exception as e:
         logger.error(f"Error calculating VIF: {e}")
-        return pd.DataFrame({"Variable": variables, "VIF": np.nan})
+        # Create detailed error report
+        with open(output_dir / "vif_analysis_error.txt", "w") as f:
+            f.write(f"Error calculating VIF: {e}\n\n")
+            f.write("Data information:\n")
+            f.write(f"- Number of rows: {len(data_subset)}\n")
+            f.write(f"- Number of columns: {len(numeric_data.columns)}\n")
+            f.write(f"- Variables: {numeric_data.columns.tolist()}\n\n")
+            f.write("Data types:\n")
+            for col in numeric_data.columns:
+                f.write(f"- {col}: {numeric_data[col].dtype}\n")
+            f.write("\nSample data (first 5 rows):\n")
+            f.write(numeric_data.head().to_string())
+            
+        return pd.DataFrame({"Variable": numeric_data.columns.tolist(), "VIF": np.nan, "Error": str(e)})
 
 def find_data_issues(data, file_format=None):
     """Identify potential data issues that could affect analysis quality."""

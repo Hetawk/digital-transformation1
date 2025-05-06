@@ -1,50 +1,66 @@
 """
-Configuration settings for the MSCI inclusion and digital transformation analysis
+Configuration settings for the digital transformation project
 """
 
 import os
-import logging
 from pathlib import Path
+import logging
+import sys
 
-# Project directory paths
-ROOT_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = ROOT_DIR / "dataset"
-RESULTS_DIR = ROOT_DIR / "results"
+# Project directories
+BASE_DIR = Path(__file__).parent.parent.parent
+RESULTS_DIR = BASE_DIR / "results"
 TABLES_DIR = RESULTS_DIR / "tables"
 FIGURES_DIR = RESULTS_DIR / "figures"
 
-# Create directories if they don't exist
-for dir_path in [RESULTS_DIR, TABLES_DIR, FIGURES_DIR]:
-    dir_path.mkdir(parents=True, exist_ok=True)
-
-# Data file paths
+# Data settings
+DATA_DIR = BASE_DIR / "dataset"
 DATA_FILE = DATA_DIR / "msci_dt_processed_2010_2023.csv"
+PREPROCESSED_FILE = DATA_DIR / "preprocessed_data.pkl"
 
-# Analysis parameters
-TREATMENT_YEAR = 2018  # Year of MSCI inclusion (post-2018)
-PLACEBO_YEAR = 2015    # Year for placebo tests
+# Analysis settings
+TREATMENT_YEAR = 2020  # MSCI inclusion event
+SAMPLE_YEARS = list(range(2010, 2024))  # Years included in analysis
+PLACEBO_YEAR = 2015    # Year for placebo test
 
-# Set up logger
-logger = logging.getLogger('digital_transformation')
+# Plot settings
+PLOT_FIGSIZE = (10, 6)
+PLOT_DPI = 300
+COLORS = {
+    "primary": "#1f77b4",
+    "secondary": "#ff7f0e",
+    "treated": "#2ca02c",
+    "control": "#d62728",
+    "highlight": "#9467bd"
+}
 
-def configure_logging(log_level=logging.INFO):
-    """
-    Configure the logger for the project
+# Configure logging
+def configure_logging():
+    """Configure logging for the project"""
+    logger = logging.getLogger('digital_transformation')
     
-    Parameters:
-    -----------
-    log_level : int
-        Logging level (default: logging.INFO)
-    """
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', 
-                                     datefmt='%Y-%m-%d %H:%M:%S')
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        logger.setLevel(log_level)
-        
+    # Remove existing handlers
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    
+    logger.setLevel(logging.INFO)
+    
+    # Create console handler
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(logging.INFO)
+    
+    # Create formatter
+    formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', 
+                                 datefmt='%Y-%m-%d %H:%M:%S')
+    console.setFormatter(formatter)
+    
+    # Add handler to logger
+    logger.addHandler(console)
+    
     return logger
+
+# Initialize logger
+logger = configure_logging()
 
 # Variable groups
 DT_MEASURES = [
@@ -78,13 +94,5 @@ INVESTOR_SCRUTINY_VARS = [
     "ESG_Score_mean"
 ]
 
-# Plot settings
-PLOT_DPI = 300
-PLOT_FIGSIZE = (10, 6)
-COLORS = {
-    'treated': '#1f77b4',  # blue
-    'control': '#ff7f0e',  # orange
-    'highlight': '#2ca02c'  # green
-}
 # Model specifications
 RANDOM_SEED = 42
