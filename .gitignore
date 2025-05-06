@@ -11,6 +11,7 @@ results/
 .idea/
 docs/
 docs
+
 # Distribution / packaging
 .Python
 build/

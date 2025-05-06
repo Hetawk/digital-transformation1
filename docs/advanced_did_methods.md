@@ -7,6 +7,7 @@ Our dataset has a staggered adoption structure, where no units are treated in th
 1. **No pre-treatment treated units**: We cannot conduct conventional balance tests between treatment and control in the pre-period
 2. **Standard DiD can be biased**: Under treatment effect heterogeneity, the two-way fixed effects DiD estimator can be biased and even get the sign wrong (Goodman-Bacon, 2021)
 
+
 ## Recommended State-of-the-Art Methods
 
 ### 1. Callaway & Sant'Anna (2021) Group-Time Average Treatment Effects
