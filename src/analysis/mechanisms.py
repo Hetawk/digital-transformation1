@@ -2,8 +2,9 @@
 Mechanism analysis for MSCI inclusion and digital transformation research
 """
 
-from src.utils import create_formula, format_regression_table, save_results_to_file
-import config
+import traceback
+from utils.util import create_formula, format_regression_table, save_results_to_file
+import loader.config as config
 import pandas as pd
 import numpy as np
 import statsmodels.formula.api as smf
@@ -11,6 +12,7 @@ import statsmodels.api as sm
 import os
 from pathlib import Path
 import sys
+from loader.config import logger
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
@@ -27,81 +29,222 @@ class MechanismAnalysis:
         """
         self.data = data
         self.mechanism_results = {}
+        # Store results for each mechanism type
+        self.financial_access_results = {}
+        self.corporate_governance_results = {}
+        self.investor_scrutiny_results = {}
 
-    def analyze_financial_access(self, dv="Digital_transformationA", post_only=True):
+    def _run_mechanism_model(self, dv, mechanism_var, post_only=False, controls=True, year_fe=True, entity_fe=True):
         """
-        Analyze financial access mechanism
-
+        Run model to test a specific mechanism
+        
         Parameters:
         -----------
         dv : str
-            Dependent variable name
+            Dependent variable
+        mechanism_var : str
+            Mechanism variable
         post_only : bool
-            Whether to analyze post-period only
-
+            Include only post-treatment periods
+        controls : bool
+            Include control variables
+        year_fe : bool
+            Include year fixed effects
+        entity_fe : bool
+            Include entity fixed effects
+            
         Returns:
         --------
-        dict : Dictionary of regression models
+        statsmodels.regression.linear_model.RegressionResults: Model results
         """
-        # Filter data if post_only
-        if post_only:
-            data = self.data[self.data['Post'] == 1].copy()
-        else:
-            data = self.data.copy()
-
-        # Check mechanism variables
-        fin_vars = [
-            var for var in config.FINANCIAL_ACCESS_VARS if var in data.columns]
-
-        if not fin_vars:
-            raise ValueError(
-                "No financial access mechanism variables found in dataset")
-
-        # Run regressions
-        models = {}
-
-        for fin_var in fin_vars:
+        try:
+            # Filter to post-treatment if specified
+            if post_only:
+                data = self.data[self.data['Post'] == 1].copy()
+            else:
+                data = self.data.copy()
+            
+            # Check if variables exist
+            if dv not in data.columns:
+                logger.error(f"Dependent variable {dv} not found in dataset")
+                return None
+                
+            if mechanism_var not in data.columns:
+                logger.error(f"Mechanism variable {mechanism_var} not found in dataset")
+                return None
+                
+            if 'MSCI_clean' not in data.columns:
+                logger.error("MSCI_clean variable not found in dataset")
+                return None
+            
             # Create interaction term
-            data[f'MSCI_clean_{fin_var}'] = data['MSCI_clean'] * data[fin_var]
+            interaction_name = f"MSCI_clean_{mechanism_var}"
+            data[interaction_name] = data['MSCI_clean'] * data[mechanism_var]
+            
+            # Build formula
+            formula = f"{dv} ~ MSCI_clean + {mechanism_var} + {interaction_name}"
+            
+            # Define control variables if not yet defined
+            if controls and not hasattr(self, 'control_vars'):
+                self.control_vars = ['age', 'TFP_OP', 'SA_index', 'WW_index', 'F050501B', 'F060101B']
+            
+            # Add controls (excluding the mechanism variable if it's a control)
+            if controls and hasattr(self, 'control_vars'):
+                other_controls = [var for var in self.control_vars 
+                                if var in data.columns and var != mechanism_var]
+                if other_controls:
+                    formula += " + " + " + ".join(other_controls)
+            
+            # Add fixed effects
+            if year_fe:
+                formula += " + C(year)"
+            
+            if entity_fe:
+                # Use panel_id if available, otherwise stkcd
+                if 'panel_id' in data.columns:
+                    formula += " + C(panel_id)"
+                    cluster_var = data['panel_id'].astype(str)
+                elif 'stkcd' in data.columns:
+                    formula += " + C(stkcd)"
+                    cluster_var = data['stkcd'].astype(str)
+                else:
+                    cluster_var = pd.Series(['1'] * len(data))
+            else:
+                # Default clustering
+                if 'stkcd' in data.columns:
+                    cluster_var = data['stkcd'].astype(str)
+                elif 'panel_id' in data.columns:
+                    cluster_var = data['panel_id'].astype(str)
+                else:
+                    cluster_var = pd.Series(['1'] * len(data))
+            
+            # Prepare data by dropping NA values
+            vars_in_formula = [v for v in formula.split() if v in data.columns]
+            vars_in_formula.extend([dv, 'MSCI_clean', mechanism_var, interaction_name])
+            if 'stkcd' in data.columns:
+                vars_in_formula.append('stkcd')
+            if 'panel_id' in data.columns:
+                vars_in_formula.append('panel_id')
+            
+            # Create a clean subset
+            analysis_data = data.dropna(subset=vars_in_formula)
+            
+            if len(analysis_data) == 0:
+                logger.error(f"No valid observations after dropping NA values for mechanism {mechanism_var}")
+                return None
+                
+            # Log analysis details
+            logger.info(f"Running mechanism analysis for {mechanism_var} on {len(analysis_data)} observations")
+            logger.info(f"Formula: {formula}")
+            
+            # Run the model
+            model = smf.ols(formula, data=analysis_data).fit(
+                cov_type='cluster',
+                cov_kwds={'groups': cluster_var}
+            )
+            
+            return model
+        except Exception as e:
+            logger.error(f"Error estimating model for {mechanism_var}: {str(e)}")
+            logger.error(f"Details: {traceback.format_exc()}")
+            return None
 
-            # Define regression variables
-            x_vars = ['MSCI_clean', fin_var, f'MSCI_clean_{fin_var}']
-
-            # Add control variables (excluding the current mechanism variable)
-            control_vars = [
-                var for var in config.CONTROL_VARS if var in data.columns and var != fin_var]
-            x_vars.extend(control_vars)
-
-            # Add year fixed effects
-            fe_vars = ["year"]
-
-            # Create formula
-            formula, _ = create_formula(dv, x_vars, fe_vars)
-
-            # Run regression with entity fixed effects
-            try:
-                # Add entity (firm) fixed effects
-                model = smf.ols(
-                    f"{formula} + entity",
-                    data=data
-                ).fit(cov_type='cluster', cov_kwds={'groups': data['stkcd']})
-
-                # Store results
-                models[fin_var] = model
-
-                # Print results
-                print(f"\nFinancial Access Mechanism: {fin_var}")
-                print(format_regression_table(
-                    model,
-                    title=f"Effect of MSCI inclusion on {dv} through {fin_var}"
-                ))
-            except Exception as e:
-                print(f"Error estimating model for {fin_var}: {e}")
-
-        # Store all models in mechanism results
-        self.mechanism_results['financial_access'] = models
-
-        return models
+    def analyze_financial_access(self, post_only=False):
+        """
+        Analyze financial access mechanisms
+        
+        Parameters:
+        -----------
+        post_only : bool, default False
+            Whether to analyze only post-treatment period
+            
+        Returns:
+        --------
+        dict: Dictionary of model results
+        """
+        results = {}
+        
+        # Subset data if needed
+        data = self.data.copy()
+        if post_only and 'Post' in data.columns:
+            data = data[data['Post'] == 1].copy()
+        
+        # Run models for each financial access variable
+        for var in config.FINANCIAL_ACCESS_VARS:
+            if var in data.columns:
+                try:
+                    # Create interaction term
+                    data[f'MSCI_clean_{var}'] = data['MSCI_clean'] * data[var]
+                    
+                    # Create model formula
+                    formula = f"Digital_transformationA ~ MSCI_clean + {var} + MSCI_clean_{var}"
+                    
+                    # Only add control variables that exist in the data
+                    control_vars = []
+                    for control in ["age", "TFP_OP"]:
+                        if control in data.columns and control != var:
+                            control_vars.append(control)
+                    
+                    # Add financial access variables (except the current one)
+                    for fa_var in config.FINANCIAL_ACCESS_VARS:
+                        if fa_var != var and fa_var in data.columns:
+                            control_vars.append(fa_var)
+                    
+                    # Add other controls if they exist
+                    for other_var in ["F050501B", "F060101B"]:
+                        if other_var in data.columns:
+                            control_vars.append(other_var)
+                    
+                    # Add controls to formula
+                    if control_vars:
+                        formula += " + " + " + ".join(control_vars)
+                    
+                    # Add year fixed effects if we have year column
+                    if 'year' in data.columns:
+                        formula += " + C(year)"
+                    
+                    print(f"Estimating model for {var}")
+                    
+                    # Drop missing values in all variables used in the model
+                    all_vars = [v for v in formula.split(" ~ ")[1].replace("C(year)", "year").split(" + ")]
+                    if 'Digital_transformationA' not in all_vars:
+                        all_vars.append('Digital_transformationA')
+                    if 'stkcd' in data.columns:
+                        all_vars.append('stkcd')
+                    
+                    # Remove duplicates and ensure all variables exist
+                    all_vars = list(set([v for v in all_vars if v in data.columns]))
+                    
+                    # Create clean subset for analysis
+                    model_data = data.dropna(subset=all_vars)
+                    
+                    if len(model_data) == 0:
+                        print(f"  No complete observations for {var} model after dropping missing values")
+                        continue
+                    
+                    # Ensure cluster groups align with filtered data
+                    if 'stkcd' in model_data.columns:
+                        cluster_groups = model_data['stkcd'].astype(str)
+                        model = smf.ols(formula, data=model_data).fit(
+                            cov_type='cluster', 
+                            cov_kwds={'groups': cluster_groups}
+                        )
+                    else:
+                        # Run without clustering if stkcd not available
+                        model = smf.ols(formula, data=model_data).fit()
+                    
+                    results[var] = model
+                    self.financial_access_results[var] = model
+                    
+                    # Print key coefficients
+                    print(f"  MSCI_clean coefficient: {model.params.get('MSCI_clean', 'N/A')}")
+                    print(f"  {var} coefficient: {model.params.get(var, 'N/A')}")
+                    print(f"  Interaction coefficient: {model.params.get(f'MSCI_clean_{var}', 'N/A')}")
+                    
+                except Exception as e:
+                    print(f"Error estimating model for {var}: {e}")
+                    
+        return results
 
     def analyze_corporate_governance(self, dv="Digital_transformationA", post_only=True):
         """
@@ -125,56 +268,60 @@ class MechanismAnalysis:
             data = self.data.copy()
 
         # Check mechanism variables
-        gov_vars = [var for var in config.CORP_GOV_VARS if var in data.columns]
+        cg_vars = [var for var in config.CORP_GOV_VARS if var in data.columns]
 
-        if not gov_vars:
+        if not cg_vars:
             print("Warning: No corporate governance variables found in dataset")
             return {}
 
         # Run regressions
         models = {}
 
-        for gov_var in gov_vars:
+        for cg_var in cg_vars:
             # Create interaction term
-            data[f'MSCI_clean_{gov_var}'] = data['MSCI_clean'] * data[gov_var]
+            data[f'MSCI_clean_{cg_var}'] = data['MSCI_clean'] * data[cg_var]
 
             # Define regression variables
-            x_vars = ['MSCI_clean', gov_var, f'MSCI_clean_{gov_var}']
+            x_vars = ['MSCI_clean', cg_var, f'MSCI_clean_{cg_var}']
 
             # Add control variables (excluding the current mechanism variable)
-            control_vars = [
-                var for var in config.CONTROL_VARS if var in data.columns and var != gov_var]
+            control_vars = [var for var in config.CONTROL_VARS 
+                           if var in data.columns and var != cg_var]
             x_vars.extend(control_vars)
-
+            
             # Add year fixed effects
             fe_vars = ["year"]
 
             # Create formula
             formula, _ = create_formula(dv, x_vars, fe_vars)
-
+            
             # Run regression with entity fixed effects
             try:
                 # Add entity (firm) fixed effects
-                model = smf.ols(
-                    f"{formula} + entity",
-                    data=data
-                ).fit(cov_type='cluster', cov_kwds={'groups': data['stkcd']})
-
-                # Store results
-                models[gov_var] = model
-
-                # Print results
-                print(f"\nCorporate Governance Mechanism: {gov_var}")
-                print(format_regression_table(
-                    model,
-                    title=f"Effect of MSCI inclusion on {dv} through {gov_var}"
-                ))
+                if 'stkcd' in data.columns:
+                    formula += " + C(stkcd)"
+                    model = smf.ols(formula, data=data).fit(
+                        cov_type='cluster', 
+                        cov_kwds={'groups': data['stkcd'].astype(str)}
+                    )
+                    
+                    # Store results
+                    models[cg_var] = model
+                    self.corporate_governance_results[cg_var] = model
+                    
+                    # Print results
+                    print(f"\nCorporate Governance Mechanism: {cg_var}")
+                    print(format_regression_table(
+                        model,
+                        title=f"Effect of MSCI inclusion on {dv} through {cg_var}"
+                    ))
+                else:
+                    print(f"Error: stkcd variable not found for clustering in {cg_var} model")
             except Exception as e:
-                print(f"Error estimating model for {gov_var}: {e}")
+                print(f"Error estimating model for {cg_var}: {e}")
 
         # Store all models in mechanism results
         self.mechanism_results['corporate_governance'] = models
-
         return models
 
     def analyze_investor_scrutiny(self, dv="Digital_transformationA", post_only=True):
@@ -199,8 +346,7 @@ class MechanismAnalysis:
             data = self.data.copy()
 
         # Check mechanism variables
-        is_vars = [
-            var for var in config.INVESTOR_SCRUTINY_VARS if var in data.columns]
+        is_vars = [var for var in config.INVESTOR_SCRUTINY_VARS if var in data.columns]
 
         if not is_vars:
             print("Warning: No investor scrutiny variables found in dataset")
@@ -217,8 +363,8 @@ class MechanismAnalysis:
             x_vars = ['MSCI_clean', is_var, f'MSCI_clean_{is_var}']
 
             # Add control variables (excluding the current mechanism variable)
-            control_vars = [
-                var for var in config.CONTROL_VARS if var in data.columns and var != is_var]
+            control_vars = [var for var in config.CONTROL_VARS 
+                           if var in data.columns and var != is_var]
             x_vars.extend(control_vars)
 
             # Add year fixed effects
@@ -230,61 +376,85 @@ class MechanismAnalysis:
             # Run regression with entity fixed effects
             try:
                 # Add entity (firm) fixed effects
-                model = smf.ols(
-                    f"{formula} + entity",
-                    data=data
-                ).fit(cov_type='cluster', cov_kwds={'groups': data['stkcd']})
-
-                # Store results
-                models[is_var] = model
-
-                # Print results
-                print(f"\nInvestor Scrutiny Mechanism: {is_var}")
-                print(format_regression_table(
-                    model,
-                    title=f"Effect of MSCI inclusion on {dv} through {is_var}"
-                ))
+                if 'stkcd' in data.columns:
+                    formula += " + C(stkcd)"
+                    model = smf.ols(formula, data=data).fit(
+                        cov_type='cluster', 
+                        cov_kwds={'groups': data['stkcd'].astype(str)}
+                    )
+                    
+                    # Store results
+                    models[is_var] = model
+                    self.investor_scrutiny_results[is_var] = model
+                    
+                    # Print results
+                    print(f"\nInvestor Scrutiny Mechanism: {is_var}")
+                    print(format_regression_table(
+                        model,
+                        title=f"Effect of MSCI inclusion on {dv} through {is_var}"
+                    ))
+                else:
+                    print(f"Error: stkcd variable not found for clustering in {is_var} model")
             except Exception as e:
                 print(f"Error estimating model for {is_var}: {e}")
 
         # Store all models in mechanism results
         self.mechanism_results['investor_scrutiny'] = models
-
         return models
 
     def extract_mechanism_effects(self):
         """
-        Extract mechanism interaction effects from all models
-
+        Extract mechanism effects from all mechanisms analyses
+        
         Returns:
         --------
-        pd.DataFrame : Table of mechanism interaction effects
+        pd.DataFrame: Combined results of all mechanism analyses
         """
-        if not self.mechanism_results:
-            raise ValueError(
-                "No mechanism analysis results available. Run analysis methods first.")
-
         results = []
-
-        for mechanism_type, models in self.mechanism_results.items():
-            for var_name, model in models.items():
-                # Extract the interaction term coefficient
-                interaction_term = f'MSCI_clean_{var_name}'
-                if interaction_term in model.params:
-                    coef = model.params[interaction_term]
-                    pval = model.pvalues[interaction_term]
-                    stderr = model.bse[interaction_term]
-
-                    results.append({
-                        'Mechanism': mechanism_type,
-                        'Variable': var_name,
-                        'Interaction Effect': coef,
-                        'Std. Error': stderr,
-                        'p-value': pval,
-                        'Significant': pval < 0.05
-                    })
-
-        return pd.DataFrame(results)
+        
+        # Collect results from all mechanism analyses
+        mechanism_results = {
+            'financial_access': self.financial_access_results,
+            'corporate_governance': self.corporate_governance_results,
+            'investor_scrutiny': self.investor_scrutiny_results
+        }
+        
+        # Check if we have any results
+        total_models = sum(len(models) for models in mechanism_results.values())
+        if total_models == 0:
+            print("No mechanism analysis results available. Run analysis methods first.")
+            # Return an empty DataFrame with appropriate columns instead of raising an error
+            return pd.DataFrame(columns=['Mechanism', 'Variable', 'Interaction Effect', 'Std. Error', 'p-value'])
+        
+        # Process each mechanism type
+        for mech_type, models in mechanism_results.items():
+            for var, model in models.items():
+                try:
+                    # Extract interaction coefficient
+                    interaction_var = f"MSCI_clean_{var}"
+                    if interaction_var in model.params:
+                        interaction_coef = model.params[interaction_var]
+                        interaction_se = model.bse[interaction_var]
+                        interaction_pval = model.pvalues[interaction_var]
+                        
+                        results.append({
+                            'Mechanism': mech_type,
+                            'Variable': var,
+                            'Interaction Effect': interaction_coef,
+                            'Std. Error': interaction_se,
+                            'p-value': interaction_pval,
+                            'Significant': interaction_pval < 0.05
+                        })
+                except Exception as e:
+                    print(f"Error extracting results for {mech_type}:{var}: {e}")
+        
+        # Convert to DataFrame
+        if results:
+            df = pd.DataFrame(results)
+            return df
+        else:
+            print("No mechanism interaction effects found in models.")
+            return pd.DataFrame(columns=['Mechanism', 'Variable', 'Interaction Effect', 'Std. Error', 'p-value'])
 
     def run_all_mechanisms(self, dv="Digital_transformationA", post_only=True):
         """
@@ -302,7 +472,7 @@ class MechanismAnalysis:
         pd.DataFrame : Table of mechanism interaction effects
         """
         # Run all mechanism analyses
-        self.analyze_financial_access(dv, post_only)
+        self.analyze_financial_access(post_only)
         self.analyze_corporate_governance(dv, post_only)
         self.analyze_investor_scrutiny(dv, post_only)
 

@@ -2,7 +2,7 @@
 Mechanism visualization module for MSCI inclusion and digital transformation analysis
 """
 
-import config
+import loader.config as config
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -60,6 +60,32 @@ class MechanismPlots:
         --------
         matplotlib.figure.Figure: The figure object
         """
+        # Check if dataframe is empty or missing required columns
+        if mechanism_df is None or mechanism_df.empty:
+            print("Warning: Empty mechanism dataframe, cannot create plot")
+            fig, ax = plt.subplots(figsize=(11, 7))
+            ax.text(0.5, 0.5, "No mechanism results available", 
+                    ha='center', va='center', fontsize=14, transform=ax.transAxes)
+            if save:
+                output_path = config.FIGURES_DIR / "mechanism_effects_empty.png"
+                plt.savefig(output_path)
+                print(f"Empty plot saved to {output_path}")
+            return fig
+            
+        required_cols = [mech_col, var_col, effect_col, stderr_col]
+        missing_cols = [col for col in required_cols if col not in mechanism_df.columns]
+        if missing_cols:
+            print(f"Warning: Missing required columns: {missing_cols}")
+            fig, ax = plt.subplots(figsize=(11, 7))
+            ax.text(0.5, 0.5, f"Missing columns: {', '.join(missing_cols)}", 
+                    ha='center', va='center', fontsize=14, transform=ax.transAxes)
+            if save:
+                output_path = config.FIGURES_DIR / "mechanism_effects_error.png"
+                plt.savefig(output_path)
+                print(f"Error plot saved to {output_path}")
+            return fig
+            
+        # Original plotting code continues...
         # Create figure
         fig, ax = plt.subplots(figsize=(11, 7))
 

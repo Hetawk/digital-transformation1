@@ -2,7 +2,7 @@
 Model visualization module for MSCI inclusion and digital transformation analysis
 """
 
-import config
+import loader.config as config
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -104,88 +104,80 @@ class ModelPlots:
 
         return fig
 
-    def plot_event_study(self, event_study_results, coef_prefix='time_',
-                         title='Event Study: Dynamic Effects of MSCI Inclusion',
-                         save=True):
+    def plot_event_study(self, model, coef_prefix='time_', title='Event Study', save=True):
         """
-        Plot event study results
-
+        Create event study plot from regression results
+        
         Parameters:
         -----------
-        event_study_results : statsmodels regression result
-            Regression results from event study analysis
+        model : statsmodels.regression.linear_model.RegressionResults
+            Event study model results
         coef_prefix : str
-            Prefix of event time dummy variables in regression
+            Prefix for coefficient names
         title : str
-            Title for the plot
+            Plot title
         save : bool
             Whether to save the plot
-
+            
         Returns:
         --------
-        matplotlib.figure.Figure: The figure object
+        matplotlib.figure.Figure: Figure object
         """
-        # Extract coefficients and standard errors for event time dummies
+        # Extract coefficients and standard errors
         coefs = []
-        periods = []
-        ci_low = []
-        ci_high = []
-
-        # Get all coefficients that start with the prefix
-        for name in event_study_results.params.index:
-            if name.startswith(coef_prefix):
-                # Extract period number from variable name
-                try:
-                    period = int(name[len(coef_prefix):])
-                    periods.append(period)
-                    coefs.append(event_study_results.params[name])
-                    stderr = event_study_results.bse[name]
-                    ci_low.append(coefs[-1] - 1.96 * stderr)
-                    ci_high.append(coefs[-1] + 1.96 * stderr)
-                except:
-                    continue
-
-        # Sort by period
-        period_order = np.argsort(periods)
-        periods = [periods[i] for i in period_order]
-        coefs = [coefs[i] for i in period_order]
-        ci_low = [ci_low[i] for i in period_order]
-        ci_high = [ci_high[i] for i in period_order]
-
+        errors = []
+        times = []
+        
+        # Handle special naming of negative time periods (time_m1, time_m2, etc)
+        for param in model.params.index:
+            if param.startswith(coef_prefix):
+                if param.startswith(coef_prefix + 'm'):
+                    # Extract the number after 'm'
+                    t = -int(param[len(coef_prefix + 'm'):])
+                else:
+                    # Extract the number after the prefix
+                    t = int(param[len(coef_prefix):])
+                
+                times.append(t)
+                coefs.append(model.params[param])
+                errors.append(model.bse[param])
+        
+        # Convert to numpy arrays and sort by time
+        times = np.array(times)
+        coefs = np.array(coefs)
+        errors = np.array(errors)
+        
+        # Sort by time
+        idx = np.argsort(times)
+        times = times[idx]
+        coefs = coefs[idx]
+        errors = errors[idx]
+        
         # Create figure
-        fig, ax = plt.subplots()
-
-        # Plot coefficients
-        ax.plot(periods, coefs, marker='o', linestyle='-',
-                color=config.COLORS['treated'])
-
-        # Add confidence intervals
-        ax.fill_between(periods, ci_low, ci_high, alpha=0.2,
-                        color=config.COLORS['treated'])
-
-        # Add zero reference line
-        ax.axhline(y=0, color='gray', linestyle='--')
-
-        # Add vertical line at event time = 0
-        ax.axvline(x=0, color='gray', linestyle='--')
-
-        # Set labels and title
-        ax.set_xlabel('Years Relative to MSCI Inclusion')
-        ax.set_ylabel('Effect on Digital Transformation')
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        # Plot coefficients and confidence intervals
+        ax.plot(times, coefs, 'o-', color='blue')
+        ax.fill_between(times, coefs - 1.96 * errors, coefs + 1.96 * errors, 
+                       alpha=0.2, color='blue')
+        
+        # Add horizontal line at y=0
+        ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+        
+        # Add vertical line at x=0 (treatment)
+        ax.axvline(x=0, color='red', linestyle='--', alpha=0.5)
+        
+        # Customize plot
+        ax.set_xlabel('Time relative to MSCI inclusion')
+        ax.set_ylabel('Coefficient estimate')
         ax.set_title(title)
-
-        # Add note
-        plt.figtext(0.5, 0.01, "Note: Coefficients are relative to t-1. Shaded area represents 95% CI.",
-                    ha="center", fontsize=8, style='italic')
-
-        plt.tight_layout()
-
-        # Save the figure if requested
+        ax.grid(True, alpha=0.3)
+        
+        # Save if requested
         if save:
-            output_path = config.FIGURES_DIR / "event_study_plot.png"
-            plt.savefig(output_path)
-            print(f"Plot saved to {output_path}")
-
+            plt.tight_layout()
+            fig.savefig(config.FIGURES_DIR / 'event_study.png', dpi=300)
+        
         return fig
 
     def plot_heterogeneity(self, results_df, model_col='Interaction', coef_col='Estimate',

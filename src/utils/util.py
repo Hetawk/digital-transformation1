@@ -2,7 +2,7 @@
 Utility functions for the MSCI inclusion and digital transformation analysis
 """
 
-import config
+import src.loader.config as config
 import pandas as pd
 import numpy as np
 import os
@@ -229,9 +229,14 @@ def format_regression_table(model, cluster_var=None, title=None):
     return '\n'.join(result)
 
 
-def check_balance(data, treatment_var, balance_vars, standardized=False):
+def check_balance(data, treatment_var, balance_vars, standardized=False, allow_missing_groups=False):
     """
     Check balance between treatment and control groups
+    
+    Supports staggered adoption designs where treated units may only exist
+    in the post-treatment period. For such designs, this function provides
+    descriptive statistics and recommends appropriate estimation methods
+    following current academic standards.
 
     Parameters:
     -----------
@@ -243,40 +248,105 @@ def check_balance(data, treatment_var, balance_vars, standardized=False):
         List of variables to check for balance
     standardized : bool, default False
         If True, compute standardized differences
+    allow_missing_groups : bool, default False
+        If True, continue with available groups instead of exiting when
+        one group is missing (important for staggered adoption designs)
 
     Returns:
     --------
-    pd.DataFrame : Balance check results
+    pd.DataFrame : Balance check results with metadata on design type
     """
+    import logging
+    import sys
+    import numpy as np
+    
+    logger = logging.getLogger('digital_transformation')
+    
     results = []
+
+    # First check if there are both treatment and control groups
+    treat_groups = data[treatment_var].dropna().unique()
+    
+    # Detect design type
+    design_type = "complete_did" if (0 in treat_groups and 1 in treat_groups) else "staggered_adoption"
+    if design_type == "staggered_adoption":
+        logger.info(f"Detected staggered adoption design with treatment groups: {treat_groups}")
+        if not allow_missing_groups:
+            logger.error(f"Staggered adoption design detected. Set allow_missing_groups=True to proceed with analysis.")
+            sys.exit(1)
+    
+    if len(treat_groups) < 2:
+        message = f"Found only {treat_groups} for {treatment_var}. This indicates a staggered adoption design."
+        if allow_missing_groups:
+            logger.warning(message + " Proceeding with limited comparison using available groups.")
+            logger.warning("Note: Standard balance tests between treated and control units in pre-treatment")
+            logger.warning("period cannot be performed due to absence of treated units pre-treatment.")
+        else:
+            logger.error(message + " Set allow_missing_groups=True to proceed with alternative analysis.")
+            sys.exit(1)
+    
+    # Check if we have enough observations in each group
+    treat_counts = data[treatment_var].value_counts()
+    
+    # Check for control group
+    control_exists = 0 in treat_counts.index and treat_counts[0] >= 5
+    if not control_exists:
+        message = f"Insufficient control observations (Treat=0): {0 if 0 not in treat_counts.index else treat_counts[0]}"
+        if allow_missing_groups:
+            logger.warning(message + " Balance comparison will be limited.")
+        else:
+            logger.error(message)
+            sys.exit(1)
+    
+    # Check for treatment group
+    treatment_exists = 1 in treat_counts.index and treat_counts[1] >= 5
+    if not treatment_exists:
+        message = f"Insufficient treatment observations (Treat=1): {0 if 1 not in treat_counts.index else treat_counts[1]}"
+        if allow_missing_groups:
+            logger.warning(message + " Balance comparison will be limited.")
+            if design_type == "staggered_adoption":
+                logger.warning("For staggered adoption designs, consider these state-of-the-art approaches:")
+                logger.warning("1. Callaway & Sant'Anna (2021): estimator for staggered treatment timing")
+                logger.warning("2. Sun & Abraham (2021): interaction-weighted estimator for heterogeneous effects")
+                logger.warning("3. de Chaisemartin & D'Haultfœuille (2020): estimator robust to treatment effect heterogeneity")
+                logger.warning("4. Event study approach with binned endpoints (Schmidheiny & Siegloch, 2020)")
+        else:
+            logger.error(message)
+            sys.exit(1)
 
     for var in balance_vars:
         if var not in data.columns:
-            print(f"Warning: Variable {var} not found in dataset")
+            logger.warning(f"Variable {var} not found in dataset, skipping in balance check")
             continue
 
         # Get treatment and control groups
-        treat_data = data[data[treatment_var] == 1][var].dropna()
-        control_data = data[data[treatment_var] == 0][var].dropna()
+        treat_data = data[data[treatment_var] == 1][var].dropna() if treatment_exists else pd.Series()
+        control_data = data[data[treatment_var] == 0][var].dropna() if control_exists else pd.Series()
 
-        # Calculate statistics
-        treat_mean = treat_data.mean()
-        control_mean = control_data.mean()
-        treat_sd = treat_data.std()
-        control_sd = control_data.std()
-        difference = treat_mean - control_mean
+        # Calculate statistics based on available data
+        treat_mean = treat_data.mean() if len(treat_data) > 0 else np.nan
+        control_mean = control_data.mean() if len(control_data) > 0 else np.nan
+        treat_sd = treat_data.std() if len(treat_data) > 1 else np.nan
+        control_sd = control_data.std() if len(control_data) > 1 else np.nan
+        
+        # Calculate difference if both means are available
+        difference = treat_mean - control_mean if not np.isnan(treat_mean) and not np.isnan(control_mean) else np.nan
 
-        # Calculate t-test (if enough observations)
-        try:
-            from scipy import stats
-            tstat, pvalue = stats.ttest_ind(
-                treat_data, control_data, equal_var=False)
-        except:
-            tstat, pvalue = np.nan, np.nan
+        # Calculate t-test only if both groups have data and non-zero variance
+        tstat, pvalue = np.nan, np.nan
+        if len(treat_data) > 1 and len(control_data) > 1 and not np.isnan(treat_sd) and not np.isnan(control_sd) and treat_sd > 0 and control_sd > 0:
+            try:
+                from scipy import stats
+                tstat, pvalue = stats.ttest_ind(
+                    treat_data, control_data, equal_var=False)
+            except Exception as e:
+                logger.warning(f"Error calculating t-test for {var}: {e}")
 
-        # Calculate standardized difference
-        pooled_sd = np.sqrt((treat_sd**2 + control_sd**2) / 2)
-        std_difference = difference / pooled_sd if pooled_sd > 0 else np.nan
+        # Calculate standardized difference if both SDs are available
+        std_difference = np.nan
+        if not np.isnan(treat_sd) and not np.isnan(control_sd) and not np.isnan(difference):
+            pooled_sd = np.sqrt((treat_sd**2 + control_sd**2) / 2)
+            std_difference = difference / pooled_sd if pooled_sd > 0 else np.nan
 
         results.append({
             'Variable': var,
@@ -290,7 +360,36 @@ def check_balance(data, treatment_var, balance_vars, standardized=False):
             'Control N': len(control_data)
         })
 
-    return pd.DataFrame(results)
+    # Create a DataFrame with results
+    result_df = pd.DataFrame(results)
+    
+    # Add metadata to results
+    result_df.attrs['treatment_exists'] = treatment_exists
+    result_df.attrs['control_exists'] = control_exists
+    result_df.attrs['staggered_adoption'] = design_type == "staggered_adoption"
+    result_df.attrs['design_type'] = design_type
+    
+    # Provide recommendations for staggered adoption design
+    if result_df.attrs['staggered_adoption']:
+        logger.info("====== STAGGERED ADOPTION DESIGN DETECTED ======")
+        logger.info("Standard DiD estimation may be biased due to heterogeneous treatment effects.")
+        logger.info("Recommended approaches (current academic standards):")
+        logger.info("1. Callaway & Sant'Anna (2021): group-time average treatment effects")
+        logger.info("   - Handles staggered adoption with heterogeneous effects")
+        logger.info("   - Implemented in R 'did' package or Python 'econtools'")
+        logger.info("2. Sun & Abraham (2021): interaction-weighted estimator")
+        logger.info("   - Robust to treatment effect heterogeneity across cohorts")
+        logger.info("3. de Chaisemartin & D'Haultfœuille (2020): DIDM estimator")
+        logger.info("   - Accounts for dynamic treatment effects")
+        logger.info("   - Implemented in Stata 'did_multiplegt' or R 'DIDmultiplegt'")
+        logger.info("4. Borusyak, Jaravel, Spiess (2021): imputation estimator")
+        logger.info("   - Efficient under parallel trends")
+        logger.info("5. Alternative approach: robust event study")
+        logger.info("   - With proper binning of endpoints (Schmidheiny & Siegloch, 2020)")
+        logger.info("   - Can estimate anticipation effects and dynamic treatment effects")
+        logger.info("See README for implementation details and references.")
+    
+    return result_df
 
 
 def match_nearest_neighbor(data, treatment_var, outcome_var, matching_vars, n_neighbors=1):
